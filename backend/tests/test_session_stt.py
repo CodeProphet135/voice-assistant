@@ -15,7 +15,13 @@ import os
 # real call. Set a harmless placeholder so these tests need no real key.
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-from conftest import FakeOpenAI, FakeWebSocket, make_text_turn
+from conftest import (
+    FakeOpenAI,
+    FakeWebSocket,
+    make_completed_event,
+    make_text_delta_event,
+    make_text_turn,
+)
 
 from voice_assistant.providers.base import SpeechStarted, SttEvent, Transcript, UtteranceEnd
 from voice_assistant.session import Session
@@ -261,6 +267,99 @@ async def test_stop_event_tears_down_stt() -> None:
 
     state_events = [e["state"] for e in fake_ws.sent if e["type"] == "state"]
     assert state_events[-1] == "idle"
+
+
+class _GatedStream:
+    """An async Responses stream that yields `pre` events, blocks on
+    `release`, then yields `post` events — lets a test freeze the agent
+    mid-turn."""
+
+    def __init__(self, pre: list, release: asyncio.Event, post: list) -> None:
+        self._pre = pre
+        self._release = release
+        self._post = post
+
+    def __aiter__(self):
+        return self._gen()
+
+    async def _gen(self):
+        for event in self._pre:
+            yield event
+        await self._release.wait()
+        for event in self._post:
+            yield event
+
+
+async def test_stop_does_not_abort_in_flight_turn() -> None:
+    """Regression: a `stop` (end-of-audio) arriving while the agent is still
+    generating a reply for an already-committed utterance must NOT cancel that
+    reply. (Aborting a turn on *new* speech is barge-in — a separate Phase 3
+    path.) This reproduces the bug the first live WAV round trip exposed."""
+    fake_ws = FakeWebSocket()
+    release = asyncio.Event()
+
+    class GatedResponses:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return _GatedStream(
+                [make_text_delta_event("Hi ")],
+                release,
+                [make_text_delta_event("there"), make_completed_event(output=[])],
+            )
+
+    class GatedClient:
+        def __init__(self) -> None:
+            self.responses = GatedResponses()
+
+    session = Session(fake_ws)
+    session.client = GatedClient()
+    fake_stt = FakeSTTProvider()
+    session._make_stt_provider = lambda: fake_stt  # noqa: SLF001 - test injection seam
+
+    fake_ws.queue_text('{"type": "start", "sample_rate": 16000}')
+    run_task = asyncio.create_task(session.run())
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    # Commit a turn; the agent emits its first delta then blocks on `release`.
+    fake_stt.push(Transcript(text="hello world", is_final=True, speech_final=True))
+    for _ in range(15):
+        await asyncio.sleep(0)
+
+    assert [e["text"] for e in fake_ws.sent if e["type"] == "assistant_delta"] == ["Hi "]
+    assert not any(e["type"] == "assistant_done" for e in fake_ws.sent)
+
+    # `stop` arrives mid-turn. _stop_stt should signal finish() but then block
+    # on the turn lock rather than cancelling the in-flight reply.
+    fake_ws.queue_text('{"type": "stop"}')
+    for _ in range(15):
+        await asyncio.sleep(0)
+
+    assert fake_stt.finished is True  # end-of-audio was signalled
+    assert fake_stt.closed is False  # but teardown is deferred until the turn ends
+    assert session.stt is not None
+    assert not any(e["type"] == "assistant_done" for e in fake_ws.sent)
+
+    # Let the agent finish; the reply must complete in full.
+    release.set()
+    for _ in range(30):
+        await asyncio.sleep(0)
+
+    fake_ws.queue_disconnect()
+    await run_task
+
+    deltas = [e["text"] for e in fake_ws.sent if e["type"] == "assistant_delta"]
+    assert deltas == ["Hi ", "there"]
+    done = [e for e in fake_ws.sent if e["type"] == "assistant_done"]
+    assert len(done) == 1
+    assert done[0]["text"] == "Hi there"
+
+    # Only after the turn completed did STT tear down.
+    assert fake_stt.closed is True
+    assert session.stt is None
 
 
 async def test_text_input_path_still_works_unchanged() -> None:

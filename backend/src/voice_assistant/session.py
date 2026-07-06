@@ -158,13 +158,22 @@ class Session:
 
     async def _stop_stt(self) -> None:
         provider = self.stt
-        self.stt = None
 
         if provider is not None:
+            # Signal end-of-audio so Deepgram flushes any pending final transcript.
             try:
                 await provider.finish()
             except Exception:  # noqa: BLE001 - best-effort, never crash on teardown
                 _logger.warning("Error finishing STT provider", exc_info=True)
+
+            # A `stop` must not abort a reply that is already generating for an
+            # utterance that already committed: wait for any in-flight turn to
+            # finish before tearing the consumer down. (Barge-in — cancelling a
+            # turn on *new* speech — is a separate, explicit Phase 3 path.)
+            async with self._turn_lock:
+                pass
+
+        self.stt = None
 
         if self._stt_task is not None:
             self._stt_task.cancel()
