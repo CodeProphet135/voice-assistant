@@ -5,14 +5,16 @@ truth for where the last session left off. Update it before you stop working,
 so the next session (or the next you) doesn't have to reconstruct context from
 `git log`.
 
-## Status: Phase 2 code-complete ✅ (voice-in; live STT test pending a Deepgram key)
+## Status: Phase 2 done ✅ (voice-in verified live end-to-end)
 
 Phases 0–1 are done and committed on `main`. **Phase 2 (voice in — Deepgram
-streaming STT + AudioWorklet mic capture) is now built, merged, and verified
-against mocks** — all committed on `main`. The two live checks that need a
-`DEEPGRAM_API_KEY` (WAV smoke test + manual browser mic test) are still pending
-a key, exactly like Phase 1 was blocked on the OpenAI key. See the Phase 2
-section below.
+streaming STT + AudioWorklet mic capture) is built, merged, and verified live
+end-to-end** — all committed on `main`. Both `OPENAI_API_KEY` and
+`DEEPGRAM_API_KEY` are present in `backend/.env` (note the format:
+`KEY = "value"` with spaces + quotes — `pydantic-settings` strips both fine, so
+a naive `grep 'KEY=.\+'` misses them; check via `settings.deepgram_api_key`).
+The only unchecked box is the human-at-a-mic browser test (can't run
+headlessly). See the Phase 2 section below.
 
 ### Phase 2 — what was built (committed on `main`)
 
@@ -74,14 +76,38 @@ Frontend:
 - Frontend renders in the preview: mic button + text input mount, no console
   errors (status shows CLOSED only because no backend was running).
 
-### Phase 2 — DoD status (live checks still pending a Deepgram key)
-- [ ] **WAV smoke test** — `uv run python ../scripts/ws_client.py --wav
-      <16k-mono.wav>` against a live backend prints streamed `stt_partial` →
-      `stt_final`. Needs `DEEPGRAM_API_KEY` in `backend/.env` (and a sample WAV
-      — there's no `samples/` dir yet; generate a 16 kHz mono 16-bit PCM one).
-- [ ] **Manual browser mic test** — `make dev-backend` + `make dev-frontend`,
-      click 🎤, speak, confirm live partial transcript then a streamed reply.
-      Needs both `OPENAI_API_KEY` and `DEEPGRAM_API_KEY`.
+### Phase 2 — DoD status
+- [x] **WAV smoke test — PASSED live** against real Deepgram + real OpenAI.
+      Full `/ws` round trip: `ready → listening → stt_partial ("What is the
+      weather in") → stt_partial ("What is the weather in Tokyo today?") →
+      stt_final → thinking → assistant_delta×N → assistant_done`. Transcription
+      was exact; TTFT (stt_final → first assistant token) ≈ **0.85 s**
+      (gpt-5-mini + minimal reasoning). Repro: generate a 16 kHz mono 16-bit
+      PCM WAV **with ~2 s trailing silence** (endpointing needs the pause to
+      fire `speech_final`) and stream it:
+      `say -o /tmp/s.aiff "What is the weather in Tokyo today?" && \`
+      `afconvert -f WAVE -d LEI16@16000 -c 1 /tmp/s.aiff /tmp/s.wav`, pad with
+      2 s of `\x00` frames, then `cd backend && uv run python \`
+      `../scripts/ws_client.py --wav /tmp/s_padded.wav` (run the client with
+      `python -u` — its stdout buffers when piped). There's still no committed
+      `samples/` fixture; a WAV with no trailing silence commits nothing until
+      `stop`, so always pad it.
+- [ ] **Manual browser mic test** — the one remaining human check. `make
+      dev-backend` + `make dev-frontend`, click 🎤, speak, confirm the live
+      partial transcript renders then a streamed reply. Can't be run
+      headlessly (no mic); everything it depends on is verified via the WAV
+      round trip above + the frontend build/typecheck.
+
+### A real bug the live test caught + fixed (commit `3ec4bbf`)
+The first live WAV round trip transcribed and committed the turn but the
+OpenAI reply was **cancelled mid-stream**: the `--wav` client sends `stop`
+after the audio ends, and `_stop_stt` was hard-cancelling the STT consumer
+task while it was awaiting `run_agent`. Fixed — `_stop_stt` now calls
+`finish()` then waits on `_turn_lock` so an already-committed utterance's reply
+completes before teardown. Cancelling a turn on *new* speech (barge-in) stays a
+separate, explicit Phase 3 path. Regression test:
+`test_stop_does_not_abort_in_flight_turn` (freezes the agent mid-turn, asserts
+`stop` doesn't drop the reply). Backend is now **36 tests**.
 
 ### Follow-ups / smaller notes for next session
 - **`openai` SDK bumped to 2.44.0**, which now raises `OpenAIError` at
@@ -245,8 +271,8 @@ Don't mark Phase 1 done without all of:
 
 1. ✅ Scaffold
 2. ✅ Text chat loop end-to-end
-3. 🟡 Voice in (Deepgram STT, AudioWorklet mic capture) — **code-complete,
-   merged on `main`; live STT test pending a `DEEPGRAM_API_KEY`**
+3. ✅ Voice in (Deepgram STT, AudioWorklet mic capture) — verified live
+   end-to-end; only the human browser-mic check remains
 4. ⬜ Voice out + barge-in (Deepgram TTS, gapless playback, interrupt handling)
    — **you are here next** — tag `v0.1.0`
 5. ⬜ Tools (weather, web_search, timers, notes)
