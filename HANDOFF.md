@@ -5,10 +5,14 @@ truth for where the last session left off. Update it before you stop working,
 so the next session (or the next you) doesn't have to reconstruct context from
 `git log`.
 
-## Status: Phase 0 complete ✅
+## Status: Phase 1 code-complete ✅ (live smoke test pending an OpenAI key)
 
-Repo scaffold is built, verified end-to-end, and committed. Clean working tree,
-four commits on `main`:
+Phase 0 scaffold plus the full Phase 1 text-chat loop are built and verified.
+**The working tree is NOT yet committed** — the Phase 1 files are new/modified
+and staged for review. Commit them as focused conventional commits (see the
+established style in `git log`) once the live smoke test below is done.
+
+Phase 0's four commits on `main`:
 
 ```
 6a43f1f feat(frontend): Vite + React + TypeScript scaffold
@@ -16,6 +20,57 @@ four commits on `main`:
 5b943b9 feat(backend): FastAPI scaffold with config and OpenTelemetry bootstrap
 8b9f70b chore: scaffold repo (license, docker, CI, env template)
 ```
+
+### Phase 1 — what was built (uncommitted working tree)
+
+Backend:
+- `protocol.py` — all WS frames (client + server), pydantic discriminated
+  union, `parse_client_event()`. This is the one contract; `ws.ts` mirrors it.
+- `agent/agent.py` — the streaming Responses tool-use loop (`run_agent`,
+  signature `async def run_agent(*, client, input_items, tools, emit,
+  on_sentence, tool_executor) -> str`). Mutates `input_items` in place. Empty
+  tool list in P1 but the function_call branch is fully written + tested.
+- `agent/chunker.py` — pure sync `Chunker` (`feed`/`flush`), abbreviation- and
+  decimal-aware.
+- `agent/prompts.py` — frozen `SYSTEM_PROMPT` (voice style, no interpolation).
+- `session.py` — `Session` orchestrator, text path. `emit()` seam is the single
+  server→client path (Phase 6 hooks `EventRecorder` in there). `on_sentence`
+  and `tool_executor` are stubs awaiting Phase 3/4.
+- `main.py` — `@app.websocket("/ws")`, declared before the static mount.
+- Responses **user-turn input shape** used:
+  `{"type":"message","role":"user","content":[{"type":"input_text","text":...}]}`.
+
+Frontend:
+- `ws.ts` — typed `ClientEvent`/`ServerEvent` mirroring protocol.py,
+  `VoiceAssistantClient` (derives ws URL from `window.location`).
+- `state.ts` — **pure reducer** (`reducer`, `initialState`), no side effects —
+  this is the same reducer Phase 6 Replay will reuse. Don't add effects to it.
+- `components/Transcript.tsx`, wired `App.tsx` (useReducer + text input).
+
+Tooling: `scripts/ws_client.py` (`--text` mode; `--wav` TODO for Phase 2).
+
+### Verified this session (no OpenAI key needed — all against `FakeOpenAI`)
+- `uv run pytest` → **27 passed** (health + 20 chunker + 6 agent-loop).
+- `uv run ruff check .` clean; frontend `npm run typecheck` + `build` clean;
+  `oxlint` zero warnings.
+- **Full `/ws` round trip** driven through FastAPI TestClient with a fake
+  OpenAI: event sequence `ready → state(thinking) → assistant_delta×N →
+  assistant_done → state(idle)`, text reconstructs, and the `create()` call
+  carried `store=False`, `stream=True`, `reasoning={effort:minimal}`,
+  `tools=[]`, `model=gpt-5-mini`. OTel span nesting confirmed
+  (`HTTP /ws` → `llm.request`).
+
+### Phase 1 — DoD status
+- [x] **One real Responses API call** — ✅ done this session. `OPENAI_API_KEY` is
+      in `backend/.env`. Ran `scripts/ws_client.py --text "hello"` against a live
+      backend: streamed `ready → thinking → assistant_delta×10 → assistant_done`
+      ("Hi — how can I help you today?"), **no 400s** — `store=False`,
+      `reasoning={effort:minimal}`, empty tool schema all accepted by the live
+      API. TTFT ≈ 1.65 s (gpt-5-mini + minimal reasoning).
+- [ ] **Manual browser test** — not yet run headlessly. `make dev-backend` +
+      `make dev-frontend`, type a message at http://localhost:5173, confirm the
+      reply streams in live. (Everything it depends on is already verified via
+      the TestClient round trip + live smoke test; this is the last human check.)
 
 Verified live in this environment (not just "should work"):
 
@@ -95,8 +150,8 @@ Don't mark Phase 1 done without all of:
 (Checklist mirrors [README.md](README.md#roadmap) — keep both in sync.)
 
 1. ✅ Scaffold
-2. ⬜ Text chat loop end-to-end — **you are here**
-3. ⬜ Voice in (Deepgram STT, AudioWorklet mic capture)
+2. 🟡 Text chat loop end-to-end — **code-complete, live smoke test pending key**
+3. ⬜ Voice in (Deepgram STT, AudioWorklet mic capture) — **you are here next**
 4. ⬜ Voice out + barge-in (Deepgram TTS, gapless playback, interrupt handling)
    — tag `v0.1.0`
 5. ⬜ Tools (weather, web_search, timers, notes)
