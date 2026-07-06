@@ -1,9 +1,10 @@
 // Typed WebSocket client mirroring backend/src/voice_assistant/protocol.py.
 //
-// Frames are JSON text messages tagged by a `type` field. Binary WS frames
-// will carry audio in later phases (STT mic frames client→server, TTS audio
-// server→client) — Phase 1 is text-only, but the event *shapes* below are
-// final so the reducer in state.ts never has to change shape later.
+// Control frames are JSON text messages tagged by a `type` field. Binary WS
+// frames carry audio: client→server mic PCM as of Phase 2 (sendAudio below),
+// server→client TTS audio starting Phase 3. The event *shapes* below were
+// final from Phase 1 so the reducer in state.ts never has to change shape
+// later.
 
 /** Messages the client sends to the server. */
 export type ClientEvent =
@@ -98,6 +99,12 @@ export class VoiceAssistantClient {
   send(event: ClientEvent): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return
     this.socket.send(JSON.stringify(event))
+  }
+
+  /** Sends a raw little-endian Int16 mono 16kHz PCM chunk as a binary WS frame (no header/framing). */
+  sendAudio(data: ArrayBuffer): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return
+    this.socket.send(data)
   }
 
   getStatus(): ConnectionStatus {

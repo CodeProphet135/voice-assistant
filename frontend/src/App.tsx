@@ -1,4 +1,5 @@
-import { useEffect, useReducer, useRef, useState } from 'react'
+import { useEffect, useReducer, useState } from 'react'
+import { MicButton } from './components/MicButton'
 import { Transcript } from './components/Transcript'
 import { initialState, reducer } from './state'
 import { VoiceAssistantClient, type ConnectionStatus } from './ws'
@@ -7,7 +8,7 @@ function App() {
   const [state, dispatch] = useReducer(reducer, initialState)
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
   const [inputText, setInputText] = useState('')
-  const clientRef = useRef<VoiceAssistantClient | null>(null)
+  const [client, setClient] = useState<VoiceAssistantClient | null>(null)
 
   useEffect(() => {
     const client = new VoiceAssistantClient({
@@ -17,12 +18,12 @@ function App() {
         dispatch({ type: status === 'open' ? 'connected' : 'disconnected' })
       },
     })
-    clientRef.current = client
+    setClient(client)
     client.connect()
 
     return () => {
       client.disconnect()
-      clientRef.current = null
+      setClient(null)
     }
   }, [])
 
@@ -32,7 +33,7 @@ function App() {
     if (!text || connectionStatus !== 'open') return
 
     dispatch({ type: 'user_submit', text })
-    clientRef.current?.send({ type: 'text_input', text })
+    client?.send({ type: 'text_input', text })
     setInputText('')
   }
 
@@ -50,9 +51,15 @@ function App() {
 
       {state.error && <p className="error-banner">{state.error}</p>}
 
-      <Transcript messages={state.messages} isThinking={isThinking} toolActivity={state.toolActivity} />
+      <Transcript
+        messages={state.messages}
+        isThinking={isThinking}
+        toolActivity={state.toolActivity}
+        sttPartial={state.sttPartial}
+      />
 
       <form className="input-row" onSubmit={handleSubmit}>
+        <MicButton client={client} dispatch={dispatch} connectionStatus={connectionStatus} />
         <input
           type="text"
           value={inputText}

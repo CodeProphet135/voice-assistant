@@ -14,6 +14,7 @@
   --color-accent: light-dark(#3860ff, #6d8dff);
   --color-user-bubble: light-dark(#3860ff, #3f5ecb);
   --color-assistant-bubble: light-dark(#eef0f4, #313138);
+  --color-recording: #e5484d;
 }
 
 body {
@@ -120,6 +121,11 @@ main {
   background: var(--color-assistant-bubble);
   color: var(--color-text);
   border-bottom-left-radius: 0.2rem;
+}
+
+.bubble-partial {
+  opacity: 0.6;
+  font-style: italic;
 }
 
 .bubble-role {
@@ -230,4 +236,50 @@ main {
 .input-row button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.mic-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 1.1rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.mic-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mic-button-recording {
+  border-color: var(--color-recording);
+  background: light-dark(#fdeceb, #4a2323);
+}
+
+.mic-recording-dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: var(--color-recording);
+  animation: mic-pulse 1.2s infinite ease-in-out;
+}
+
+@keyframes mic-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.3);
+  }
 }

@@ -82,8 +82,13 @@ export function reducer(state: AppState, action: Action): AppState {
     }
 
     case 'stt_final': {
-      // Shown as a user message starting Phase 2 — harmless to store for now.
-      return { ...state, sttPartial: action.text }
+      // Commit the utterance as a user message, mirroring user_submit, and
+      // clear the live partial now that it's been superseded by the final.
+      return {
+        ...state,
+        messages: [...state.messages, { role: 'user', text: action.text }],
+        sttPartial: '',
+      }
     }
 
     case 'assistant_delta': {

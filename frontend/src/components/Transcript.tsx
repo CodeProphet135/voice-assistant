@@ -4,12 +4,13 @@ interface TranscriptProps {
   messages: Message[]
   isThinking: boolean
   toolActivity: ToolActivity[]
+  sttPartial?: string
 }
 
-export function Transcript({ messages, isThinking, toolActivity }: TranscriptProps) {
+export function Transcript({ messages, isThinking, toolActivity, sttPartial }: TranscriptProps) {
   return (
     <div className="transcript">
-      {messages.length === 0 && !isThinking && (
+      {messages.length === 0 && !isThinking && !sttPartial && (
         <p className="transcript-empty">Say hello — type a message below to start.</p>
       )}
       {messages.map((message, index) => (
@@ -18,6 +19,12 @@ export function Transcript({ messages, isThinking, toolActivity }: TranscriptPro
           <p className="bubble-text">{message.text}</p>
         </div>
       ))}
+      {sttPartial && (
+        <div className="bubble bubble-user bubble-partial">
+          <span className="bubble-role">You</span>
+          <p className="bubble-text">{sttPartial}</p>
+        </div>
+      )}
       {isThinking && (
         <div className="bubble bubble-assistant bubble-thinking">
           <span className="bubble-role">Assistant</span>
