@@ -1,4 +1,5 @@
-"""Shared test fixtures: a FakeOpenAI client scripting Responses API streams.
+"""Shared test fixtures: a FakeOpenAI client scripting Responses API streams,
+plus a FakeWebSocket harness for driving ``Session`` end-to-end.
 
 ``run_agent`` (agent/agent.py) duck-types on ``event.type`` and reads a small
 set of attributes (``.delta``, ``.item``, ``.response``) rather than importing
@@ -6,6 +7,7 @@ concrete SDK event classes, so simple ``types.SimpleNamespace`` objects stand
 in perfectly as scripted stream events here.
 """
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -97,3 +99,34 @@ class FakeOpenAI:
 @pytest.fixture
 def fake_openai() -> FakeOpenAI:
     return FakeOpenAI()
+
+
+class FakeWebSocket:
+    """Minimal stand-in for a FastAPI ``WebSocket`` — captures every
+    ``send_json`` call and lets tests feed scripted ``receive()`` results
+    (JSON text frames or binary frames) so ``Session.run()`` can be driven
+    end-to-end without a real ASGI server."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+        self._incoming: asyncio.Queue[dict] = asyncio.Queue()
+
+    async def send_json(self, data: dict) -> None:
+        self.sent.append(data)
+
+    def queue_text(self, raw: str) -> None:
+        self._incoming.put_nowait({"type": "websocket.receive", "text": raw})
+
+    def queue_bytes(self, data: bytes) -> None:
+        self._incoming.put_nowait({"type": "websocket.receive", "bytes": data})
+
+    def queue_disconnect(self) -> None:
+        self._incoming.put_nowait({"type": "websocket.disconnect"})
+
+    async def receive(self) -> dict:
+        return await self._incoming.get()
+
+
+@pytest.fixture
+def fake_websocket() -> FakeWebSocket:
+    return FakeWebSocket()
