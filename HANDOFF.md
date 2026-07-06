@@ -5,12 +5,106 @@ truth for where the last session left off. Update it before you stop working,
 so the next session (or the next you) doesn't have to reconstruct context from
 `git log`.
 
+## Status: Phase 2 code-complete ✅ (voice-in; live STT test pending a Deepgram key)
+
+Phases 0–1 are done and committed on `main`. **Phase 2 (voice in — Deepgram
+streaming STT + AudioWorklet mic capture) is now built, merged, and verified
+against mocks** — all committed on `main`. The two live checks that need a
+`DEEPGRAM_API_KEY` (WAV smoke test + manual browser mic test) are still pending
+a key, exactly like Phase 1 was blocked on the OpenAI key. See the Phase 2
+section below.
+
+### Phase 2 — what was built (committed on `main`)
+
+Built by two parallel subagents in isolated worktrees, then merged (backend and
+frontend touch disjoint files, so the merges were conflict-free).
+
+Backend:
+- `providers/base.py` — the STT provider seam: `STTProvider` `Protocol`
+  (`start`/`send_audio`/`finish`/`events`/`aclose`) + normalized
+  `Transcript`/`SpeechStarted`/`UtteranceEnd` dataclasses (`SttEvent` union).
+  Vendor types never leak past `providers/`.
+- `providers/deepgram.py` — `DeepgramSTT`, the only concrete impl. **Uses the
+  actually-installed `deepgram-sdk` 7.4.0 API, which is a totally different
+  surface from the v3 patterns CLAUDE.md/PLAN.md were written against** —
+  `AsyncDeepgramClient().listen.v1.connect(...)` is an *async context manager*
+  yielding an `AsyncV1SocketClient` (`send_media(bytes)`, `recv()`/`async for`,
+  `send_close_stream()`); received messages are pydantic models discriminated
+  by `.type` (`"Results"`/`"SpeechStarted"`/`"UtteranceEnd"`/`"Metadata"`),
+  transcript at `msg.channel.alternatives[0].transcript` with
+  `is_final`/`speech_final`. Do NOT "fix" this back to the v3 callback API.
+  Connection opens only in `start()` — construction is cheap and keyless, so
+  the text path and unit tests need no Deepgram key.
+- `session.py` — STT turn path wired in. `_run_turn(text)` is the shared body
+  for both the text-input and STT-commit paths (settles to `listening` if the
+  mic is open, else `idle`). `StartEvent` → open STT + spawn `_consume_stt`;
+  binary frames in `run()` → `stt.send_audio(bytes)`; interim → `stt_partial`;
+  `is_final` accumulates, `speech_final` (or `UtteranceEnd` fallback) commits →
+  `stt_final` + agent. `_turn_lock` serializes turns; `_stop_stt` tears down on
+  `StopEvent` and in `run()`'s `finally` (dropped socket can't leak the task).
+  `_make_stt_provider()` is a factory seam tests override to inject a fake.
+- `tests/test_session_stt.py` (8 tests) + a `FakeWebSocket` harness in
+  `conftest.py`. All mocked — no Deepgram key needed.
+- `scripts/ws_client.py` — new `--wav <path>` mode streams a 16 kHz mono PCM
+  WAV as binary frames and prints `stt_partial`/`stt_final` (needs a live
+  server + Deepgram key to actually run).
+
+Frontend:
+- `audio/pcm-worklet.ts` — `AudioWorkletProcessor` resampling native-rate
+  Float32 mic audio → 16 kHz Int16LE PCM. Loaded via
+  `import url from './pcm-worklet.ts?worker&url'` — **not** `addModule(new
+  URL(...))`, which this Vite mis-sniffs as MPEG-TS and inlines untranspiled TS
+  (crashes at runtime). See gotchas.
+- `audio/mic.ts` — `MicCapture` (getUserMedia `echoCancellation:true` →
+  AudioContext → worklet → `onPcm` callback), start/stop, idempotent.
+- `ws.ts` — `sendAudio(data: ArrayBuffer)` binary sender.
+- `state.ts` — `stt_final` now commits a `{role:'user'}` message + clears the
+  partial; `stt_partial` sets the live partial. Reducer stays pure.
+- `components/MicButton.tsx` — toggle button: sends `start`, streams PCM via
+  `sendAudio`, sends `stop`; surfaces mic-permission errors.
+- `App.tsx`/`Transcript.tsx`/`index.css` — MicButton wired next to text input,
+  live partial shown as a muted in-progress bubble, mic styling (pulsing dot).
+
+### Phase 2 — verified this session (no keys needed — all mocked)
+- `cd backend && uv run ruff check .` clean; `uv run pytest` → **35 passed**
+  (27 pre-existing + 8 new STT tests). Sanity-imports of `session` and
+  `providers.deepgram` succeed with no Deepgram/OpenAI key set.
+- `cd frontend && npm run typecheck` (`tsc -b`) clean; `npm run build` succeeds
+  and emits `pcm-worklet-*.js` as its own transpiled chunk; `oxlint` exit 0.
+- Frontend renders in the preview: mic button + text input mount, no console
+  errors (status shows CLOSED only because no backend was running).
+
+### Phase 2 — DoD status (live checks still pending a Deepgram key)
+- [ ] **WAV smoke test** — `uv run python ../scripts/ws_client.py --wav
+      <16k-mono.wav>` against a live backend prints streamed `stt_partial` →
+      `stt_final`. Needs `DEEPGRAM_API_KEY` in `backend/.env` (and a sample WAV
+      — there's no `samples/` dir yet; generate a 16 kHz mono 16-bit PCM one).
+- [ ] **Manual browser mic test** — `make dev-backend` + `make dev-frontend`,
+      click 🎤, speak, confirm live partial transcript then a streamed reply.
+      Needs both `OPENAI_API_KEY` and `DEEPGRAM_API_KEY`.
+
+### Follow-ups / smaller notes for next session
+- **`openai` SDK bumped to 2.44.0**, which now raises `OpenAIError` at
+  `AsyncOpenAI()` construction if no key is resolvable (env or `.env`). Runtime
+  is fine when a key is present; but `Session.__init__` builds the client
+  eagerly, so a bare `Session()` with no key raises. The STT tests work around
+  it with `os.environ.setdefault("OPENAI_API_KEY", "test-key")` at import.
+  Consider making the client lazy or tolerating a missing key in `__init__`.
+- `StartEvent.sample_rate` is advisory only — `DeepgramSTT` hardcodes 16 kHz
+  per convention; not plumbed through.
+- Text-input `_run_turn` isn't under `_turn_lock` (only the STT-commit path is),
+  so typing *and* talking at the exact same instant could race `input_items`.
+  Harmless in practice for P2; tighten if it ever matters.
+
+---
+
+_Historical (Phase 1) notes below._
+
 ## Status: Phase 1 code-complete ✅ (live smoke test pending an OpenAI key)
 
 Phase 0 scaffold plus the full Phase 1 text-chat loop are built and verified.
-**The working tree is NOT yet committed** — the Phase 1 files are new/modified
-and staged for review. Commit them as focused conventional commits (see the
-established style in `git log`) once the live smoke test below is done.
+Committed on `main` (Phase 1's commits: `protocol`, agent loop, session/`/ws`,
+frontend chat UI, `ws_client.py`).
 
 Phase 0's four commits on `main`:
 
@@ -150,10 +244,11 @@ Don't mark Phase 1 done without all of:
 (Checklist mirrors [README.md](README.md#roadmap) — keep both in sync.)
 
 1. ✅ Scaffold
-2. 🟡 Text chat loop end-to-end — **code-complete, live smoke test pending key**
-3. ⬜ Voice in (Deepgram STT, AudioWorklet mic capture) — **you are here next**
+2. ✅ Text chat loop end-to-end
+3. 🟡 Voice in (Deepgram STT, AudioWorklet mic capture) — **code-complete,
+   merged on `main`; live STT test pending a `DEEPGRAM_API_KEY`**
 4. ⬜ Voice out + barge-in (Deepgram TTS, gapless playback, interrupt handling)
-   — tag `v0.1.0`
+   — **you are here next** — tag `v0.1.0`
 5. ⬜ Tools (weather, web_search, timers, notes)
 6. ⬜ Polish (full test suite, README diagram + latency table, Docker image,
    error-handling passes)
@@ -185,3 +280,25 @@ this file.
   Harmless — not something to fix right now.
 - Docker Desktop needs a manual `open -a Docker` + poll-until-ready on this
   machine; it is not started automatically.
+
+## Known gotchas hit during Phase 2 (don't rediscover these)
+
+- **`deepgram-sdk` resolved to 7.4.0**, a fully rewritten generated SDK — its
+  live-STT surface bears no resemblance to the v3 `DeepgramClient().listen.
+  asyncwebsocket.v("1")` + `LiveTranscriptionEvents` callback API you'll find
+  in most docs/tutorials and in CLAUDE.md's wording. The real API is
+  `AsyncDeepgramClient().listen.v1.connect(...)` (async CM) →
+  `AsyncV1SocketClient` with `send_media`/`recv`/`async for`/`send_close_stream`
+  and `.type`-discriminated pydantic messages. `providers/deepgram.py` is
+  correct against the installed version — verify against the package, not memory.
+- **AudioWorklet + Vite:** `audioContext.audioWorklet.addModule(new URL(
+  './pcm-worklet.ts', import.meta.url))` does NOT work — Vite only special-cases
+  that `new URL` literal inside `new Worker(...)`; passed to `addModule` it
+  mis-sniffs `.ts` as `video/mp2t` and inlines the raw, untranspiled TS as a
+  data URL, which throws when the worklet evaluates it. Use
+  `import pcmWorkletUrl from './pcm-worklet.ts?worker&url'` instead (forces the
+  worker-bundling/transpile pipeline; emits a real JS chunk). Already fixed.
+- The worklet resampler must rebase its leftover-sample buffer against the last
+  index actually used for interpolation, not the loop's overshooting cursor —
+  the naive version drifts ~0.8% fast over a sustained capture. Already fixed;
+  keep the `lastI0` rebasing if you touch `pcm-worklet.ts`.
