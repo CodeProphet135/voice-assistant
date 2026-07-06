@@ -52,7 +52,7 @@ make lint       # ruff + tsc
 
 ## Roadmap
 
-- [ ] Phase 0 — Scaffold
+- [x] Phase 0 — Scaffold
 - [ ] Phase 1 — Text chat loop end-to-end
 - [ ] Phase 2 — Voice in (STT)
 - [ ] Phase 3 — Voice out + barge-in
