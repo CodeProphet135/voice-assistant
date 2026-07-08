@@ -142,7 +142,17 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, error: action.message }
     }
 
-    // tts_start / tts_end / tts_cancel / timer_fired: no Phase 1 UI yet.
+    case 'tts_cancel': {
+      // Barge-in: the backend cancels the in-flight turn, so no
+      // assistant_done will ever arrive for it. Close out the partial
+      // assistant bubble (leaving its text in place as the interrupted
+      // reply) so the next turn's first assistant_delta starts a fresh one
+      // instead of appending to this one. Audio is flushed by the caller
+      // (App.tsx) as a side effect — this is a pure state change only.
+      return { ...state, assistantInProgress: false }
+    }
+
+    // tts_start / tts_end / timer_fired: no Phase 1 UI yet.
     default: {
       return state
     }

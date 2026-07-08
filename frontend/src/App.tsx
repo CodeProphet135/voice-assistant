@@ -1,5 +1,7 @@
 import { useEffect, useReducer, useState } from 'react'
+import { AudioPlayer } from './audio/player'
 import { MicButton } from './components/MicButton'
+import { StatusBadge } from './components/StatusBadge'
 import { Transcript } from './components/Transcript'
 import { initialState, reducer } from './state'
 import { VoiceAssistantClient, type ConnectionStatus } from './ws'
@@ -11,12 +13,18 @@ function App() {
   const [client, setClient] = useState<VoiceAssistantClient | null>(null)
 
   useEffect(() => {
+    const player = new AudioPlayer()
+
     const client = new VoiceAssistantClient({
-      onEvent: (event) => dispatch(event),
+      onEvent: (event) => {
+        if (event.type === 'tts_cancel') player.flush()
+        dispatch(event)
+      },
       onStatusChange: (status) => {
         setConnectionStatus(status)
         dispatch({ type: status === 'open' ? 'connected' : 'disconnected' })
       },
+      onAudio: (audio) => player.enqueue(audio),
     })
     setClient(client)
     client.connect()
@@ -24,6 +32,7 @@ function App() {
     return () => {
       client.disconnect()
       setClient(null)
+      void player.close()
     }
   }, [])
 
@@ -44,9 +53,7 @@ function App() {
     <main>
       <header className="app-header">
         <h1>Voice Assistant</h1>
-        <span className={`status-badge status-${connectionStatus}`}>
-          {connectionStatus === 'open' ? state.status : connectionStatus}
-        </span>
+        <StatusBadge connectionStatus={connectionStatus} pipelineState={state.status} />
       </header>
 
       {state.error && <p className="error-banner">{state.error}</p>}

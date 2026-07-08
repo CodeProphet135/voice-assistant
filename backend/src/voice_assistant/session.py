@@ -1,11 +1,14 @@
 """Per-connection orchestrator.
 
 Phase 2 scope: text-input path (Phase 1) plus streaming speech-to-text
-(Deepgram). TTS (Phase 3) and tools (Phase 4) slot into the remaining stubs
-below without changing this file's shape.
+(Deepgram). Phase 3 adds streaming text-to-speech: the turn now runs as a
+cancellable task that pipelines agent-produced sentences into a TTS queue
+(the structure barge-in, Task 2b, will cancel). Tools (Phase 4) slot into
+the remaining stub without changing this file's shape.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -25,15 +28,30 @@ from voice_assistant.protocol import (
     SttFinalEvent,
     SttPartialEvent,
     TextInputEvent,
+    TtsCancelEvent,
+    TtsEndEvent,
+    TtsStartEvent,
     parse_client_event,
 )
-from voice_assistant.providers.base import STTProvider, Transcript, UtteranceEnd
-from voice_assistant.providers.deepgram import DeepgramSTT
+from voice_assistant.providers.base import (
+    SpeechStarted,
+    STTProvider,
+    Transcript,
+    TTSProvider,
+    UtteranceEnd,
+)
+from voice_assistant.providers.deepgram import DeepgramSTT, DeepgramTTS
+from voice_assistant.telemetry import get_tracer
 
 _logger = logging.getLogger(__name__)
+_tracer = get_tracer(__name__)
 
 # No tools yet (Phase 4 introduces a registry here).
 _TOOLS: list[dict] = []
+
+# Sentinel pushed onto the TTS queue to signal the agent producer is done
+# (always enqueued last, even on error, so the drain loop always terminates).
+_TURN_END = object()
 
 
 class Session:
@@ -59,6 +77,13 @@ class Session:
         self._turn_lock = asyncio.Lock()
         self._stt_buffer: list[str] = []
 
+        # TTS (speaker) state. Construction is cheap and keyless-safe (no
+        # network I/O until ``synthesize()`` is actually called), so it's
+        # always present -- same posture as ``self.stt``'s factory seam.
+        self.tts: TTSProvider = self._make_tts_provider()
+        self._tts_queue: asyncio.Queue = asyncio.Queue()
+        self._turn_task: asyncio.Task | None = None
+
     async def emit(self, event) -> None:
         """The single seam every server→client event flows through.
 
@@ -69,9 +94,10 @@ class Session:
         await self.ws.send_json(event.model_dump())
 
     async def on_sentence(self, sentence: str) -> None:
-        """TTS sink stub. Phase 3 replaces this with Deepgram synthesis
-        pushed onto a queue; for now there's no audio path, so this is a
-        no-op placeholder that keeps the agent loop's shape stable."""
+        """The queue producer side of the agent->TTS pipeline: ``run_agent``
+        (agent.py) invokes this once per sentence the chunker emits (plus
+        once for the trailing flush). ``_run_turn`` is the consumer."""
+        await self._tts_queue.put(sentence)
 
     async def tool_executor(self, name: str, arguments: str, call_id: str) -> str:
         """Tool dispatch stub. The tool list is empty in Phase 1, so this
@@ -84,30 +110,116 @@ class Session:
         touching Deepgram or requiring an API key."""
         return DeepgramSTT()
 
+    def _make_tts_provider(self) -> TTSProvider:
+        """Factory seam so tests can inject a fake TTS provider without
+        touching Deepgram or requiring an API key. Mirrors
+        ``_make_stt_provider``."""
+        return DeepgramTTS()
+
+    async def _run_agent_producer(self) -> None:
+        """Run the agent to completion, then always enqueue the terminating
+        sentinel so ``_run_turn``'s drain loop is guaranteed to finish, even
+        if the agent raised (``run_agent`` already swallows its own errors
+        internally -- this ``finally`` is belt-and-suspenders)."""
+        try:
+            await run_agent(
+                client=self.client,
+                input_items=self.input_items,
+                tools=_TOOLS,
+                emit=self.emit,
+                on_sentence=self.on_sentence,
+                tool_executor=self.tool_executor,
+            )
+        finally:
+            await self._tts_queue.put(_TURN_END)
+
     async def _run_turn(self, text: str) -> None:
         """Run one user turn (shared by the text-input and STT commit
-        paths): append the user message, run the agent to completion, then
-        settle back into listening (if the mic is active) or idle."""
-        self.input_items.append(
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": text}],
-            }
-        )
-        await self.emit(StateEvent(state="thinking"))
-        await run_agent(
-            client=self.client,
-            input_items=self.input_items,
-            tools=_TOOLS,
-            emit=self.emit,
-            on_sentence=self.on_sentence,
-            tool_executor=self.tool_executor,
-        )
-        await self.emit(StateEvent(state="listening" if self.stt is not None else "idle"))
+        paths) under ``_turn_lock``: append the user message, run the agent
+        while pipelining each sentence it produces into TTS synthesis
+        streamed to the browser as binary frames, then settle back into
+        listening (if the mic is active) or idle.
+
+        This runs as a cancellable task from the STT path (see
+        ``_commit_stt_turn``) so that barge-in (Task 2b) can cancel it on
+        new speech; the whole turn -- including queue drain -- happens
+        inside the lock so back-to-back turns never interleave.
+        """
+        async with self._turn_lock:
+            with _tracer.start_as_current_span("turn"):
+                self.input_items.append(
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    }
+                )
+                await self.emit(StateEvent(state="thinking"))
+
+                producer = asyncio.create_task(self._run_agent_producer())
+                speaking = False
+                index = 0
+                try:
+                    while True:
+                        item = await self._tts_queue.get()
+                        if item is _TURN_END:
+                            break
+                        if not speaking:
+                            await self.emit(StateEvent(state="speaking"))
+                            speaking = True
+                        await self.emit(TtsStartEvent(sentence_index=index, text=item))
+                        with _tracer.start_as_current_span("tts.synthesize") as span:
+                            span.set_attribute("sentence_index", index)
+                            async for chunk in self.tts.synthesize(item):
+                                await self.ws.send_bytes(chunk)
+                        index += 1
+                    await producer
+                    await self.emit(TtsEndEvent())
+                    await self.emit(
+                        StateEvent(state="listening" if self.stt is not None else "idle")
+                    )
+                except asyncio.CancelledError:
+                    # Barge-in (2b) cancels this task. Cancel the agent
+                    # producer, let it unwind, then propagate. Do NOT emit
+                    # tts_end/listening here -- the canceller (2b) owns the
+                    # post-barge-in state.
+                    producer.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await producer
+                    # The producer is now guaranteed finished (cancelled or
+                    # not) and can no longer enqueue anything, so drain any
+                    # sentences/_TURN_END it left behind -- the queue is
+                    # shared across turns and stale items here would corrupt
+                    # the *next* turn's drain loop (early stale _TURN_END,
+                    # or a leftover sentence spoken out of turn).
+                    while not self._tts_queue.empty():
+                        self._tts_queue.get_nowait()
+                    raise
 
     async def _handle_text_input(self, event: TextInputEvent) -> None:
         await self._run_turn(event.text)
+
+    def _turn_active(self) -> bool:
+        return self._turn_task is not None and not self._turn_task.done()
+
+    async def _barge_in(self) -> None:
+        """Cancel the in-flight assistant turn because the user started
+        speaking over it. ``_run_turn``'s cancel path (Task 2a) unwinds the
+        agent producer + TTS and drains the queue; here we just tear the
+        turn down and reset UI state back to listening."""
+        task = self._turn_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 - never let barge-in teardown crash the consumer
+            _logger.warning("Error awaiting cancelled turn during barge-in", exc_info=True)
+        self._turn_task = None
+        await self.emit(TtsCancelEvent())
+        await self.emit(StateEvent(state="listening"))
 
     async def _consume_stt(self) -> None:
         """Drain normalized STT events, surfacing partial/final transcripts
@@ -122,6 +234,8 @@ class Session:
                 if isinstance(ev, Transcript):
                     if not ev.is_final:
                         if ev.text.strip():
+                            if self._turn_active():
+                                await self._barge_in()
                             await self.emit(SttPartialEvent(text=ev.text))
                         continue
 
@@ -130,6 +244,9 @@ class Session:
 
                     if ev.speech_final:
                         await self._commit_stt_turn()
+                elif isinstance(ev, SpeechStarted):
+                    if self._turn_active():
+                        await self._barge_in()
                 elif isinstance(ev, UtteranceEnd):
                     # Fallback turn-end signal when speech_final never fires.
                     await self._commit_stt_turn()
@@ -140,15 +257,17 @@ class Session:
 
     async def _commit_stt_turn(self) -> None:
         """Join the buffered final-transcript pieces into one utterance and
-        launch the agent, guarded so only one turn runs at a time."""
+        launch the turn as a tracked task WITHOUT awaiting it, so
+        ``_consume_stt`` keeps looping (Task 2b needs that to watch for
+        barge-in speech while a turn is running). Overlapping STT turns are
+        still serialized by ``_turn_lock`` inside ``_run_turn``."""
         utterance = " ".join(part.strip() for part in self._stt_buffer if part.strip()).strip()
         self._stt_buffer = []
         if not utterance:
             return
 
-        async with self._turn_lock:
-            await self.emit(SttFinalEvent(text=utterance))
-            await self._run_turn(utterance)
+        await self.emit(SttFinalEvent(text=utterance))
+        self._turn_task = asyncio.create_task(self._run_turn(utterance))
 
     async def _start_stt(self) -> None:
         await self.emit(StateEvent(state="listening"))
@@ -227,3 +346,7 @@ class Session:
         finally:
             # A dropped socket must not leak the STT task/connection.
             await self._stop_stt()
+            try:
+                await self.tts.aclose()
+            except Exception:  # noqa: BLE001 - best-effort, never crash on teardown
+                _logger.warning("Error closing TTS provider", exc_info=True)

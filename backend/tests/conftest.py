@@ -109,10 +109,14 @@ class FakeWebSocket:
 
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.sent_bytes: list[bytes] = []
         self._incoming: asyncio.Queue[dict] = asyncio.Queue()
 
     async def send_json(self, data: dict) -> None:
         self.sent.append(data)
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent_bytes.append(data)
 
     def queue_text(self, raw: str) -> None:
         self._incoming.put_nowait({"type": "websocket.receive", "text": raw})
@@ -130,3 +134,25 @@ class FakeWebSocket:
 @pytest.fixture
 def fake_websocket() -> FakeWebSocket:
     return FakeWebSocket()
+
+
+class FakeTTSProvider:
+    """Scriptable stand-in for ``providers.base.TTSProvider``. ``synthesize``
+    yields a deterministic, single PCM-shaped chunk per call so tests can
+    assert on exactly what was "spoken" without any network I/O."""
+
+    def __init__(self) -> None:
+        self.synthesized: list[str] = []
+        self.closed = False
+
+    async def synthesize(self, text: str):
+        self.synthesized.append(text)
+        yield b"PCM:" + text.encode()
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def fake_tts() -> FakeTTSProvider:
+    return FakeTTSProvider()

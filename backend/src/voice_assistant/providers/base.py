@@ -86,3 +86,16 @@ class STTProvider(Protocol):
         """Tear down the connection and any background tasks. Safe to call
         even if ``start()`` was never called or already failed."""
         ...
+
+
+class TTSProvider(Protocol):
+    """Async text-to-speech provider seam. ``synthesize`` yields raw PCM audio
+    bytes (linear16, 24 kHz mono, no container) for one sentence."""
+
+    def synthesize(self, text: str) -> AsyncIterator[bytes]:
+        """Synthesize one sentence, yielding raw PCM chunks as they arrive."""
+        ...
+
+    async def aclose(self) -> None:
+        """Release any underlying client/resources. Safe to call always."""
+        ...

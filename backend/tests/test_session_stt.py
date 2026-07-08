@@ -17,6 +17,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from conftest import (
     FakeOpenAI,
+    FakeTTSProvider,
     FakeWebSocket,
     make_completed_event,
     make_text_delta_event,
@@ -65,6 +66,7 @@ def make_session(
     session.client = fake_openai
     fake_stt = FakeSTTProvider()
     session._make_stt_provider = lambda: fake_stt  # noqa: SLF001 - test injection seam
+    session.tts = FakeTTSProvider()  # keep TTS hermetic/offline for STT-path tests
     return session, fake_stt
 
 
@@ -318,6 +320,7 @@ async def test_stop_does_not_abort_in_flight_turn() -> None:
     session.client = GatedClient()
     fake_stt = FakeSTTProvider()
     session._make_stt_provider = lambda: fake_stt  # noqa: SLF001 - test injection seam
+    session.tts = FakeTTSProvider()  # keep TTS hermetic/offline
 
     fake_ws.queue_text('{"type": "start", "sample_rate": 16000}')
     run_task = asyncio.create_task(session.run())
@@ -368,6 +371,7 @@ async def test_text_input_path_still_works_unchanged() -> None:
     fake_openai.responses.script(make_text_turn("Hello there"))
     session = Session(fake_ws)
     session.client = fake_openai
+    session.tts = FakeTTSProvider()  # keep TTS hermetic/offline
 
     fake_ws.queue_text('{"type": "text_input", "text": "hi"}')
     fake_ws.queue_disconnect()
