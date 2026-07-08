@@ -12,6 +12,7 @@ leaks past this file — ``Session`` only ever sees ``providers.base`` types.
 import asyncio
 import contextlib
 import logging
+from collections.abc import AsyncIterator
 
 from deepgram import AsyncDeepgramClient
 
@@ -27,6 +28,11 @@ _SAMPLE_RATE = 16000
 _CHANNELS = 1
 _ENDPOINTING_MS = 300
 _UTTERANCE_END_MS = 1000
+
+# TTS conventions (CLAUDE.md) — Aura REST, synthesized per sentence.
+_TTS_ENCODING = "linear16"
+_TTS_SAMPLE_RATE = 24000
+_TTS_CONTAINER = "none"
 
 
 class DeepgramSTT:
@@ -133,3 +139,46 @@ class DeepgramSTT:
                 await self._connect_cm.__aexit__(None, None, None)
             self._connect_cm = None
         self._socket = None
+
+
+class DeepgramTTS:
+    """Concrete ``TTSProvider`` wrapping Deepgram's Aura REST speak endpoint.
+
+    Constructed cheaply (no network I/O, no client) so it can be created
+    unconditionally; the ``AsyncDeepgramClient`` is only built lazily inside
+    ``synthesize()``, which means a bare ``DeepgramTTS()`` never needs a
+    Deepgram API key at construction time.
+    """
+
+    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
+        self._api_key = api_key if api_key is not None else settings.deepgram_api_key
+        self._model = model if model is not None else settings.deepgram_tts_model
+
+    def _make_client(self) -> AsyncDeepgramClient:
+        return AsyncDeepgramClient(api_key=self._api_key)
+
+    async def synthesize(self, text: str) -> AsyncIterator[bytes]:
+        """Synthesize one sentence via the Aura REST endpoint, yielding raw
+        PCM chunks as they arrive. Never let a vendor-side error propagate —
+        degrade silently (stop yielding), same as the STT reader's guard."""
+        try:
+            client = self._make_client()
+            audio_iter = client.speak.v1.audio.generate(
+                text=text,
+                model=self._model,
+                encoding=_TTS_ENCODING,
+                sample_rate=_TTS_SAMPLE_RATE,
+                container=_TTS_CONTAINER,
+            )
+            async for chunk in audio_iter:
+                yield chunk
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - vendor errors must not crash the caller
+            _logger.warning("Deepgram TTS synthesis failed", exc_info=True)
+
+    async def aclose(self) -> None:
+        """No persistent connection to tear down (each ``synthesize()`` call
+        builds its own short-lived client), but kept for seam symmetry with
+        ``STTProvider`` and to absorb any future stateful client."""
+        return
