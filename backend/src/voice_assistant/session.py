@@ -28,11 +28,18 @@ from voice_assistant.protocol import (
     SttFinalEvent,
     SttPartialEvent,
     TextInputEvent,
+    TtsCancelEvent,
     TtsEndEvent,
     TtsStartEvent,
     parse_client_event,
 )
-from voice_assistant.providers.base import STTProvider, Transcript, TTSProvider, UtteranceEnd
+from voice_assistant.providers.base import (
+    SpeechStarted,
+    STTProvider,
+    Transcript,
+    TTSProvider,
+    UtteranceEnd,
+)
 from voice_assistant.providers.deepgram import DeepgramSTT, DeepgramTTS
 from voice_assistant.telemetry import get_tracer
 
@@ -192,6 +199,24 @@ class Session:
     async def _handle_text_input(self, event: TextInputEvent) -> None:
         await self._run_turn(event.text)
 
+    def _turn_active(self) -> bool:
+        return self._turn_task is not None and not self._turn_task.done()
+
+    async def _barge_in(self) -> None:
+        """Cancel the in-flight assistant turn because the user started
+        speaking over it. ``_run_turn``'s cancel path (Task 2a) unwinds the
+        agent producer + TTS and drains the queue; here we just tear the
+        turn down and reset UI state back to listening."""
+        task = self._turn_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        self._turn_task = None
+        await self.emit(TtsCancelEvent())
+        await self.emit(StateEvent(state="listening"))
+
     async def _consume_stt(self) -> None:
         """Drain normalized STT events, surfacing partial/final transcripts
         and committing a turn once Deepgram signals the utterance is done.
@@ -205,6 +230,8 @@ class Session:
                 if isinstance(ev, Transcript):
                     if not ev.is_final:
                         if ev.text.strip():
+                            if self._turn_active():
+                                await self._barge_in()
                             await self.emit(SttPartialEvent(text=ev.text))
                         continue
 
@@ -213,6 +240,9 @@ class Session:
 
                     if ev.speech_final:
                         await self._commit_stt_turn()
+                elif isinstance(ev, SpeechStarted):
+                    if self._turn_active():
+                        await self._barge_in()
                 elif isinstance(ev, UtteranceEnd):
                     # Fallback turn-end signal when speech_final never fires.
                     await self._commit_stt_turn()
