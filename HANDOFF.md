@@ -5,6 +5,105 @@ truth for where the last session left off. Update it before you stop working,
 so the next session (or the next you) doesn't have to reconstruct context from
 `git log`.
 
+## Status: Phase 3 done ✅ (voice out + barge-in — voice-out verified live end-to-end)
+
+Phases 0–2 are done and committed on `main`. **Phase 3 (voice out — Deepgram
+TTS, gapless browser playback — plus barge-in interruption) is built, reviewed,
+and merge-ready on branch `phase-3-voice-out`** (not yet merged to `main` /
+tagged `v0.1.0` — that's the wrap-up step). Backend is **49 tests green**;
+frontend typecheck/build/lint clean. The full voice-out path was verified LIVE
+against real Deepgram + OpenAI. The only unchecked box is the human-at-a-mic
+**barge-in** browser test (can't run headlessly). Numbering note: this is
+PLAN.md's "Phase 3" and README's "Phase 3"; it is the 4th item in the "Full
+phase plan" list further down.
+
+### Phase 3 — what was built (branch `phase-3-voice-out`)
+
+Built by sequential subagents (implementer → task review → fix loop per task,
+then a whole-branch review), each on Sonnet. Commits, in order:
+- `413cd04` **DeepgramTTS + TTSProvider seam.** `providers/base.py` gains a
+  `TTSProvider` `Protocol` (`synthesize(text) -> AsyncIterator[bytes]`,
+  `aclose()`); `providers/deepgram.py` gains `DeepgramTTS`. Uses the installed
+  **`deepgram-sdk` 7.4.0** REST TTS surface: `client.speak.v1.audio.generate(
+  text=..., model=settings.deepgram_tts_model, encoding="linear16",
+  sample_rate=24000, container="none")` returns an `AsyncIterator[bytes]` of raw
+  PCM. Construction is cheap/keyless (client built lazily via `_make_client()`);
+  vendor errors degrade silently. (Do NOT "fix" this to a v3 API — verify against
+  the installed package.)
+- `c119b81` + `f5d03d9` **session TTS worker + cancellable-turn + OTel spans.**
+  `session.py` now runs each turn under `_turn_lock` wrapped in a `turn` OTel
+  span. `on_sentence` pushes each chunker sentence onto `self._tts_queue`; a
+  producer task runs `run_agent` and enqueues a `_TURN_END` sentinel in its
+  `finally`; the drain loop pulls sentences, emits `TtsStartEvent(sentence_index,
+  text)`, synthesizes per sentence inside a `tts.synthesize` span, and streams
+  PCM to the browser via `self.ws.send_bytes(chunk)` (binary, NOT through
+  `emit()`). State machine: `thinking → speaking` (first sentence) `→
+  listening/idle` (after `TtsEndEvent`). The STT-commit path launches the turn
+  as `self._turn_task` (create_task, NOT awaited) so `_consume_stt` keeps
+  looping. `_run_turn`'s `except CancelledError` branch cancels the producer,
+  **drains the queue**, and re-raises (fix `f5d03d9` — so a cancelled turn can't
+  leave stale sentences/sentinel for the next turn). `self.tts` is closed in
+  `run()`'s finally. This also incidentally put the text-input path under the
+  turn lock (resolves an old follow-up).
+- `2465b22` **barge-in.** `_consume_stt` calls `_barge_in()` when a turn is
+  active (`_turn_active()`) and a `SpeechStarted` OR a non-empty interim
+  transcript arrives. `_barge_in` cancels+awaits `self._turn_task`, emits
+  `TtsCancelEvent`, and settles state to `listening`. `SpeechStarted` with no
+  active turn is still a no-op; a plain `stop` still does NOT abort an in-flight
+  turn (that Phase 2 path is unchanged).
+- `b806127` **frontend playback + StatusBadge.** `audio/player.ts` `AudioPlayer`
+  plays raw linear16/24kHz/mono PCM gaplessly (`nextStartTime` cursor,
+  `createBuffer(1,n,24000)`, odd-byte carry across frames), with `flush()` for
+  barge-in (stops sources, resets cursor + leftover byte). `ws.ts` sets
+  `binaryType='arraybuffer'` and surfaces binary frames via an `onAudio`
+  callback. `state.ts` gains a **pure** `tts_cancel` case (`assistantInProgress
+  = false`, so the next turn starts a fresh assistant bubble). `App.tsx` owns one
+  `AudioPlayer`, wires `onAudio → enqueue`, and calls `player.flush()` on
+  `tts_cancel`. `components/StatusBadge.tsx` extracted; `index.css` styles the
+  pipeline-state pill.
+- `ec5f518` **polish** (from final review): `_barge_in` now logs non-cancel
+  teardown exceptions; `player.ts` guards `resume()` against unhandled rejection.
+
+### Phase 3 — verified this session
+- Backend: `cd backend && uv run pytest -q` → **49 passed**; `uv run ruff check
+  .` clean. All TTS/barge-in tests are hermetic (fake STT/TTS/OpenAI — no keys).
+- Frontend: `npm run typecheck` (`tsc -b`), `npm run build`, `npx oxlint` all
+  clean; the `pcm-worklet` chunk still emits.
+- Whole-branch review (final gate) returned **READY** — verified the
+  backend↔frontend PCM/event contract, barge-in coherence, resource teardown,
+  and the OTel span tree empirically (in-memory exporter + a 15-interleaving
+  barge-in race stress test).
+- **LIVE end-to-end voice-out** (real Deepgram + OpenAI, `scripts`-style WAV
+  round trip via `scratchpad/verify_tts.py`): streamed a 16 kHz WAV of "What is
+  the capital of France?" → `stt_final` (exact) → assistant "The capital of
+  France is Paris." → `state:speaking` → `tts_start #0` → **51 binary audio
+  frames ≈ 2.04 s of 24 kHz PCM** → `tts_end`. OTel `turn` span parents both
+  `llm.request` and `tts.synthesize` (confirmed from the live console trace).
+
+### Phase 3 — DoD status
+- [x] Deepgram TTS synthesizes per sentence; audio streams to the browser as
+      binary WS frames — verified live (51 frames, ~2.04 s).
+- [x] Gapless player + `tts_cancel` flush path — built, typecheck/build/lint
+      clean; happy-path playback smoke-tested live in the browser by the
+      implementer (thinking→speaking→idle, audio scheduled, no console errors).
+- [x] Barge-in backend (cancel turn on new speech, `tts_cancel`, queue drain) —
+      unit-tested + adversarially race-tested in review.
+- [x] Full-turn OTel spans (`turn` → `llm.request`/`tts.synthesize`) — confirmed
+      in the live trace.
+- [ ] **Manual browser BARGE-IN test** — the one remaining human check. `make
+      dev-backend` + `make dev-frontend`, click 🎤, let the assistant start
+      speaking, then talk over it: audio should stop <300 ms with no garbled
+      playback, and a fresh reply should start. Can't be run headlessly (no mic).
+
+### Wrap-up still pending for Phase 3
+- Merge `phase-3-voice-out` → `main` and tag **`v0.1.0`** (per PLAN Phase 3).
+- The manual mic barge-in check above (human).
+- `.superpowers/sdd/progress.md` holds the per-task ledger + two logged benign
+  minors (a `_commit_stt_turn` lock-acquisition race that can settle to `idle`
+  instead of `listening` on a same-tick `stop`; both are non-blocking).
+
+---
+
 ## Status: Phase 2 done ✅ (voice-in verified live end-to-end)
 
 Phases 0–1 are done and committed on `main`. **Phase 2 (voice in — Deepgram
@@ -273,9 +372,10 @@ Don't mark Phase 1 done without all of:
 2. ✅ Text chat loop end-to-end
 3. ✅ Voice in (Deepgram STT, AudioWorklet mic capture) — verified live
    end-to-end; only the human browser-mic check remains
-4. ⬜ Voice out + barge-in (Deepgram TTS, gapless playback, interrupt handling)
-   — **you are here next** — tag `v0.1.0`
-5. ⬜ Tools (weather, web_search, timers, notes)
+4. ✅ Voice out + barge-in (Deepgram TTS, gapless playback, interrupt handling)
+   — built + reviewed on `phase-3-voice-out`, voice-out verified live; pending
+   merge to `main` + tag `v0.1.0` + human mic barge-in check
+5. ⬜ Tools (weather, web_search, timers, notes) — **you are here next**
 6. ⬜ Polish (full test suite, README diagram + latency table, Docker image,
    error-handling passes)
 7. ⬜ Event Timeline + Replay (event sourcing, Temporal-style replay UI) — tag
@@ -328,3 +428,31 @@ this file.
   index actually used for interpolation, not the loop's overshooting cursor —
   the naive version drifts ~0.8% fast over a sustained capture. Already fixed;
   keep the `lastI0` rebasing if you touch `pcm-worklet.ts`.
+
+## Known gotchas hit during Phase 3 (don't rediscover these)
+
+- **Deepgram 7.4.0 TTS is `client.speak.v1.audio.generate(...)`**, an `async`
+  method returning an `AsyncIterator[bytes]` of raw PCM — NOT the WebSocket TTS
+  API and NOT any v3 `speak` surface. Verify the signature against the installed
+  package (`uv run python -c "import inspect; from deepgram import
+  AsyncDeepgramClient; print(inspect.signature(AsyncDeepgramClient(api_key='x')
+  .speak.v1.audio.generate))"`), not from memory.
+- **The audio contract is raw linear16 / 24000 Hz / mono / `container=none`** —
+  no WAV header, just sample bytes. A binary WS frame boundary can split a 2-byte
+  sample, so the frontend player carries a leftover odd byte across frames; the
+  backend sends it via `ws.send_bytes` (binary), deliberately NOT through
+  `emit()` (which stays the single JSON/event-sourcing seam). Keep both halves in
+  lockstep if you touch either side.
+- **The turn is a cancellable `asyncio.Task` (`self._turn_task`)** launched by
+  `_commit_stt_turn` without being awaited, so `_consume_stt` can keep running to
+  detect barge-in. Barge-in cancels that task; `_run_turn`'s `except
+  CancelledError` branch is what cancels the agent producer and drains the shared
+  `_tts_queue`. If you refactor the turn, preserve: (a) the producer is created
+  INSIDE the `turn` span's `with` block (so `llm.request`/`tts.synthesize` nest
+  under it — asyncio copies the OTel context into the task), and (b) the queue is
+  fully drained through `_TURN_END` before the lock releases (else back-to-back
+  turns cross-contaminate sentences).
+- **Playback AudioContext autoplay:** the browser `AudioContext` starts
+  `suspended` until a user gesture; `AudioPlayer` calls `resume()` lazily,
+  relying on the mic-button click having already gestured. If playback is ever
+  silent-until-second-turn, that's the thing to check.
