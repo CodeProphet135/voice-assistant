@@ -43,6 +43,7 @@ export interface VoiceAssistantClientOptions {
   url?: string
   onEvent?: (event: ServerEvent) => void
   onStatusChange?: (status: ConnectionStatus) => void
+  onAudio?: (audio: ArrayBuffer) => void
 }
 
 /** Thin, framework-agnostic wrapper around a WebSocket connection to the assistant backend. */
@@ -52,17 +53,20 @@ export class VoiceAssistantClient {
   private readonly url: string
   private readonly onEvent: (event: ServerEvent) => void
   private readonly onStatusChange: (status: ConnectionStatus) => void
+  private readonly onAudio: (audio: ArrayBuffer) => void
 
   constructor(options: VoiceAssistantClientOptions = {}) {
     this.url = options.url ?? defaultWsUrl()
     this.onEvent = options.onEvent ?? (() => {})
     this.onStatusChange = options.onStatusChange ?? (() => {})
+    this.onAudio = options.onAudio ?? (() => {})
   }
 
   connect(): void {
     if (this.socket) return
     this.setStatus('connecting')
     const socket = new WebSocket(this.url)
+    socket.binaryType = 'arraybuffer'
     this.socket = socket
 
     socket.addEventListener('open', () => {
@@ -80,7 +84,10 @@ export class VoiceAssistantClient {
     })
 
     socket.addEventListener('message', (event: MessageEvent) => {
-      if (typeof event.data !== 'string') return // ignore binary frames for now
+      if (event.data instanceof ArrayBuffer) {
+        this.onAudio(event.data)
+        return
+      }
       let parsed: unknown
       try {
         parsed = JSON.parse(event.data)

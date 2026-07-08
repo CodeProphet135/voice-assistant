@@ -66,13 +66,34 @@ main {
   border: 1px solid var(--color-border);
 }
 
-.status-open {
-  color: var(--color-accent);
-}
-
 .status-closed,
 .status-connecting {
   opacity: 0.7;
+}
+
+.status-listening {
+  color: var(--color-accent);
+}
+
+.status-thinking {
+  color: var(--color-muted);
+  animation: pulse 1.2s infinite ease-in-out;
+}
+
+.status-speaking {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--color-accent);
+}
+
+.status-speaking::before {
+  content: '';
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: currentColor;
+  animation: mic-pulse 1.2s infinite ease-in-out;
 }
 
 .error-banner {
