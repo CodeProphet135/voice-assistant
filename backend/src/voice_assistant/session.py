@@ -211,8 +211,12 @@ class Session:
         if task is None or task.done():
             return
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
+        try:
             await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 - never let barge-in teardown crash the consumer
+            _logger.warning("Error awaiting cancelled turn during barge-in", exc_info=True)
         self._turn_task = None
         await self.emit(TtsCancelEvent())
         await self.emit(StateEvent(state="listening"))

@@ -36,7 +36,7 @@ export class AudioPlayer {
     if (this.context.state === 'suspended') {
       // The mic button click that started this turn already satisfied the
       // browser's user-gesture requirement, so resume() is permitted here.
-      void this.context.resume()
+      void this.context.resume().catch(() => {})
     }
     return this.context
   }
