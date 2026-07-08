@@ -7,6 +7,7 @@ agent's Responses stream. No Deepgram key or real network I/O is involved.
 """
 
 import asyncio
+import contextlib
 import os
 
 # Session() constructs a real AsyncOpenAI client (its .responses is swapped
@@ -147,3 +148,56 @@ async def test_text_input_path_also_speaks() -> None:
     state_events = [e["state"] for e in fake_ws.sent if e["type"] == "state"]
     assert state_events[-1] == "idle"
     assert "speaking" in state_events
+
+
+class BlockingTTSProvider:
+    """Like FakeTTSProvider, but ``synthesize`` parks forever on a gate
+    before yielding — used to freeze the drain loop mid-synthesis of the
+    first sentence, after the agent producer has already run to completion
+    and enqueued the remaining sentences plus ``_TURN_END``. This lets a
+    test observe (and cancel into) that "stale items still queued" state
+    deterministically, without timing races."""
+
+    def __init__(self) -> None:
+        self.synthesized: list[str] = []
+        self.gate = asyncio.Event()
+
+    async def synthesize(self, text: str):
+        self.synthesized.append(text)
+        await self.gate.wait()
+        yield b"PCM:" + text.encode()
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def test_cancelled_turn_drains_stale_tts_queue_items() -> None:
+    """A turn cancelled mid-synthesis (the future barge-in path) must not
+    leave stale sentences or a stale ``_TURN_END`` sentinel sitting in the
+    shared ``_tts_queue`` -- those would corrupt the *next* turn's drain
+    loop (terminate it early, or speak a leftover sentence). Regression
+    test for the cancellation-cleanup gap found in review."""
+    fake_ws = FakeWebSocket()
+    fake_openai = FakeOpenAI()
+    fake_openai.responses.script(make_text_turn("Hello there. How are you? Goodbye now."))
+    session = Session(fake_ws)
+    session.client = fake_openai
+    fake_tts = BlockingTTSProvider()
+    session.tts = fake_tts
+
+    session._turn_task = asyncio.create_task(session._run_turn("hi"))
+    # Let the drain loop dequeue and start synthesizing the first sentence
+    # (parking on fake_tts.gate) while the agent producer races ahead,
+    # finishes, and enqueues the remaining sentences plus _TURN_END.
+    await _drive(60)
+
+    # Sanity: the producer really did leave stale items behind for the
+    # cancellation path to clean up -- otherwise this test would pass
+    # vacuously regardless of the fix.
+    assert not session._tts_queue.empty()
+
+    session._turn_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await session._turn_task
+
+    assert session._tts_queue.empty()

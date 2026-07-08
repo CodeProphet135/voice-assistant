@@ -179,6 +179,14 @@ class Session:
                     producer.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await producer
+                    # The producer is now guaranteed finished (cancelled or
+                    # not) and can no longer enqueue anything, so drain any
+                    # sentences/_TURN_END it left behind -- the queue is
+                    # shared across turns and stale items here would corrupt
+                    # the *next* turn's drain loop (early stale _TURN_END,
+                    # or a leftover sentence spoken out of turn).
+                    while not self._tts_queue.empty():
+                        self._tts_queue.get_nowait()
                     raise
 
     async def _handle_text_input(self, event: TextInputEvent) -> None:
