@@ -57,9 +57,11 @@ _TURN_END = object()
 
 # An interim transcript needs at least this many words before it's treated
 # as substantial enough to barge in on an active turn (see
-# docs/bug-self-barge-in-echo.md) -- a lone word is as likely to be a stray
-# noise or echo onset as genuine speech.
-_MIN_BARGE_IN_WORDS = 2
+# docs/bug-self-barge-in-echo.md). Three, not two: live echo runs showed
+# Deepgram mishears short echo fragments badly enough ("A fun" came back as
+# "The fun") that no text check can classify them, while genuine
+# interruptions reach three words within the first interim or two.
+_MIN_BARGE_IN_WORDS = 3
 
 # Echo-normalization regexes (see Session._is_echo). Separators (dashes/
 # slash) become a space so words either side don't fuse together; everything
@@ -253,8 +255,11 @@ class Session:
         # Space-insensitive substring: Deepgram segments words differently
         # than our TTS text (live run: spoken "under water" came back as
         # "underwater"), and one such difference must not defeat the guard.
+        # Only for transcripts >= 6 compact chars -- shorter ones produce
+        # trivial matches (e.g. "a bit" inside "habitually").
         joined_compact = joined.replace(" ", "")
-        if normalized.replace(" ", "") in joined_compact:
+        compact = normalized.replace(" ", "")
+        if len(compact) >= 6 and compact in joined_compact:
             return True
 
         # Fuzzy fallback: Deepgram may mis-transcribe a word of our own
@@ -262,13 +267,16 @@ class Session:
         # when it really is an echo. A word also counts as matched if it's
         # long enough (>= 4 chars, to avoid trivial hits) and appears inside
         # the space-stripped spoken text -- same segmentation tolerance as
-        # above, applied per word.
+        # above, applied per word. Threshold 0.6: live runs showed misheard
+        # echo fragments score >= 60% overlap while genuine phrases stay
+        # <= ~30% -- clean separation (the original 0.8 let "A fun fact.
+        # Rome", misheard from "A fun fact: Roman...", commit at 75%).
         words = normalized.split()
         joined_words = set(joined.split())
         matched = sum(
             w in joined_words or (len(w) >= 4 and w in joined_compact) for w in words
         )
-        return matched / len(words) >= 0.8
+        return matched / len(words) >= 0.6
 
     async def _barge_in(self) -> None:
         """Cancel the in-flight assistant turn because the user started

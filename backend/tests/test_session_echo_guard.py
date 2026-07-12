@@ -51,10 +51,12 @@ async def _start_turn_with_spoken_sentence(
     return run_task
 
 
-def _make_gated_session(fake_ws: FakeWebSocket, release: asyncio.Event):
+def _make_gated_session(
+    fake_ws: FakeWebSocket, release: asyncio.Event, sentence: str = SPOKEN_SENTENCE
+):
     client = BargeInClient()
     client.responses.script_gated(
-        [make_text_delta_event(SPOKEN_SENTENCE)],
+        [make_text_delta_event(sentence)],
         release,
         [make_text_delta_event("more "), make_completed_event(output=[])],
     )
@@ -86,7 +88,7 @@ async def test_echo_interim_while_speaking_is_dropped_silently() -> None:
     await run_task
 
 
-# --- 2. Genuine >=2-word interim while speaking still barges in ------------
+# --- 2. Genuine >=3-word interim while speaking still barges in ------------
 
 
 async def test_genuine_interim_while_speaking_still_barges_in() -> None:
@@ -96,12 +98,12 @@ async def test_genuine_interim_while_speaking_still_barges_in() -> None:
 
     run_task = await _start_turn_with_spoken_sentence(fake_ws, session, fake_stt, release)
 
-    fake_stt.push(Transcript(text="wait stop", is_final=False, speech_final=False))
+    fake_stt.push(Transcript(text="wait stop please", is_final=False, speech_final=False))
     await _drive(20)
 
     assert any(e["type"] == "tts_cancel" for e in fake_ws.sent)
     partial_events = [e for e in fake_ws.sent if e["type"] == "stt_partial"]
-    assert {"type": "stt_partial", "text": "wait stop"} in partial_events
+    assert {"type": "stt_partial", "text": "wait stop please"} in partial_events
 
     fake_ws.queue_disconnect()
     await run_task
@@ -267,7 +269,7 @@ async def test_non_echo_phrase_sharing_words_commits_normally() -> None:
     client.responses.script(
         [make_text_delta_event("Sure "), make_completed_event(output=[])]
     )
-    # Shares "fun"/"fact" with the spoken sentence but well under the 80%
+    # Shares "fun"/"fact" with the spoken sentence but well under the 60%
     # word-overlap threshold -- must commit as a genuine new turn.
     fake_stt.push(Transcript(text="tell me another fun fact", is_final=True, speech_final=True))
     await _drive(40)
@@ -319,31 +321,44 @@ def test_is_echo_empty_normalized_transcript_returns_false() -> None:
 def test_is_echo_fuzzy_word_substitution_meets_threshold() -> None:
     session = _bare_session()
     session._spoken_recent.append("Nice hit me with it")
-    # 4/5 words match (80%) -- meets the fuzzy fallback threshold even
-    # though it's not a substring.
+    # 4/5 words match (80% >= the 0.6 threshold) even though it's not a
+    # substring.
     assert session._is_echo("nice hit me with sit") is True
 
 
 def test_is_echo_fuzzy_word_substitution_below_threshold() -> None:
     session = _bare_session()
     session._spoken_recent.append("Nice hit me with it")
-    # Only 2/5 words match (40%) -- must not classify as echo.
+    # Only 2/5 words match (40% < the 0.6 threshold) -- must not classify
+    # as echo.
     assert session._is_echo("nice sit see with sat") is False
 
 
-# Exact spoken sentence + echo interim from the live mic_sim.py --echo run
+# Exact spoken sentence + echo interim from live mic_sim.py --echo run 1
 # that slipped past the first version of the guard: Deepgram compounded
 # "under water" into "underwater", so the transcript was neither a
-# (space-sensitive) substring of the spoken text nor >=80% word-overlap.
+# (space-sensitive) substring of the spoken text nor above the fuzzy
+# word-overlap threshold.
 _LIVE_SPOKEN_SENTENCE = (
     "The Romans used a concrete recipe that actually got stronger under water, "
     "which is why many of their harbors and sea walls have survived for two "
     "thousand years."
 )
 
+# Exact spoken sentence from live run 2: Deepgram MISHEARD the echo ("A fun"
+# -> "The fun", "Roman" -> "Rome"), so even segmentation tolerance couldn't
+# push the overlap past the original 0.8 threshold -- the observed clean
+# separation (misheard echo >=60%, genuine phrases <=~30%) is why the
+# threshold is 0.6.
+_LIVE_SPOKEN_SENTENCE_2 = (
+    "A fun fact: Roman concrete used volcanic ash and seawater to make harbors "
+    "that actually got stronger over time, and some of those structures still "
+    "survive after two thousand years."
+)
+
 
 def test_is_echo_survives_word_segmentation_differences() -> None:
-    """Regression (live echo run): one word-segmentation difference in
+    """Regression (live echo run 1): one word-segmentation difference in
     Deepgram's transcription of our own audio must not defeat the guard."""
     session = _bare_session()
     session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE)
@@ -354,7 +369,118 @@ def test_is_echo_segmentation_tolerance_does_not_catch_genuine_speech() -> None:
     """Inverse guard: the space-insensitive matching must not classify a
     genuine phrase that merely shares a compound word with the spoken text
     as echo ("underwater" alone matches space-stripped "under water", but
-    that's 1/4 words -- far below the 80% threshold)."""
+    that's 1/4 words -- far below the threshold)."""
     session = _bare_session()
     session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE)
     assert session._is_echo("what about underwater cities") is False
+
+
+def test_is_echo_misheard_final_meets_lowered_threshold() -> None:
+    """Regression (live echo run 2): Deepgram misheard "Roman" as "Rome" in
+    the echoed final "A fun fact. Rome" -- 3/4 words overlap (75%), which
+    the original 0.8 threshold let through to commit as a user turn."""
+    session = _bare_session()
+    session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE_2)
+    assert session._is_echo("A fun fact. Rome") is True
+
+
+def test_is_echo_misheard_short_interim_stays_unclassified() -> None:
+    """The live run-2 interim "The fun" (misheard "A fun") scores only 1/2
+    (50%) -- below even the lowered threshold. That's fine: fragments this
+    short can't be reliably text-classified, which is exactly why
+    _MIN_BARGE_IN_WORDS is 3 (see the integration test below)."""
+    session = _bare_session()
+    session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE_2)
+    assert session._is_echo("The fun") is False
+
+
+def test_is_echo_compact_substring_requires_min_length() -> None:
+    """The space-insensitive substring branch only applies to compact
+    transcripts >= 6 chars, guarding trivial matches: "a bit" (compact
+    "abit") appears inside "habitually" but is plainly not an echo."""
+    session = _bare_session()
+    session._spoken_recent.append("Habitually speaking.")
+    assert session._is_echo("a bit") is False
+
+
+# --- 9. Live-run regressions (integration) ---------------------------------
+
+
+async def test_misheard_short_echo_interim_does_not_barge() -> None:
+    """Live run 2: the echo interim "The fun" isn't classifiable as echo
+    (50% overlap), so it IS surfaced as a partial -- but at 2 words it sits
+    below _MIN_BARGE_IN_WORDS and must not cancel the turn."""
+    fake_ws = FakeWebSocket()
+    release = asyncio.Event()
+    session, fake_stt, fake_tts, client = _make_gated_session(
+        fake_ws, release, sentence=f"{_LIVE_SPOKEN_SENTENCE_2} "
+    )
+
+    run_task = await _start_turn_with_spoken_sentence(fake_ws, session, fake_stt, release)
+
+    fake_stt.push(Transcript(text="The fun", is_final=False, speech_final=False))
+    await _drive(20)
+
+    assert not any(e["type"] == "tts_cancel" for e in fake_ws.sent)
+    partial_events = [e for e in fake_ws.sent if e["type"] == "stt_partial"]
+    assert {"type": "stt_partial", "text": "The fun"} in partial_events
+    assert session._turn_active()
+
+    release.set()
+    await _drive(30)
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+async def test_misheard_echo_final_does_not_commit() -> None:
+    """Live run 2: the echoed final "A fun fact. Rome" (misheard "Roman")
+    committed as a user turn at the 0.8 threshold -- at 0.6 it must be
+    dropped: no stt_final, no new agent call."""
+    fake_ws = FakeWebSocket()
+    release = asyncio.Event()
+    session, fake_stt, fake_tts, client = _make_gated_session(
+        fake_ws, release, sentence=f"{_LIVE_SPOKEN_SENTENCE_2} "
+    )
+
+    run_task = await _start_turn_with_spoken_sentence(fake_ws, session, fake_stt, release)
+    calls_before = len(client.responses.calls)
+    stt_final_count_before = len([e for e in fake_ws.sent if e["type"] == "stt_final"])
+
+    fake_stt.push(Transcript(text="A fun fact. Rome", is_final=True, speech_final=True))
+    await _drive(20)
+
+    stt_final_count_after = len([e for e in fake_ws.sent if e["type"] == "stt_final"])
+    assert stt_final_count_after == stt_final_count_before, "the misheard echo must not commit"
+    assert len(client.responses.calls) == calls_before
+
+    release.set()
+    await _drive(30)
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+async def test_resegmented_echo_interim_is_dropped() -> None:
+    """Live run 1: the echo interim "got stronger underwater, which"
+    (Deepgram compounded "under water") is echo via the space-insensitive
+    substring check -- dropped entirely: no barge-in, no partial."""
+    fake_ws = FakeWebSocket()
+    release = asyncio.Event()
+    session, fake_stt, fake_tts, client = _make_gated_session(
+        fake_ws, release, sentence=f"{_LIVE_SPOKEN_SENTENCE} "
+    )
+
+    run_task = await _start_turn_with_spoken_sentence(fake_ws, session, fake_stt, release)
+
+    fake_stt.push(
+        Transcript(text="got stronger underwater, which", is_final=False, speech_final=False)
+    )
+    await _drive(20)
+
+    assert not any(e["type"] == "tts_cancel" for e in fake_ws.sent)
+    assert not any(e["type"] == "stt_partial" for e in fake_ws.sent)
+    assert session._turn_active()
+
+    release.set()
+    await _drive(30)
+    fake_ws.queue_disconnect()
+    await run_task

@@ -140,14 +140,48 @@ async def test_nonempty_interim_during_active_turn_barges_in() -> None:
 
     run_task = await _start_and_commit_gated_turn(fake_ws, session, fake_stt, release)
 
-    fake_stt.push(Transcript(text="wait stop", is_final=False, speech_final=False))
+    fake_stt.push(Transcript(text="wait stop please", is_final=False, speech_final=False))
     await _drive(20)
 
     assert any(e["type"] == "tts_cancel" for e in fake_ws.sent), "expected a tts_cancel event"
     partial_events = [e for e in fake_ws.sent if e["type"] == "stt_partial"]
-    assert {"type": "stt_partial", "text": "wait stop"} in partial_events
+    assert {"type": "stt_partial", "text": "wait stop please"} in partial_events
     assert not any(e["type"] == "assistant_done" for e in fake_ws.sent)
     assert session._turn_task is None or session._turn_task.done()
+
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+async def test_two_word_interim_during_active_turn_does_not_barge_in() -> None:
+    """Two words are still below the barge-in minimum: live echo runs showed
+    Deepgram mishears short echo fragments ("A fun" -> "The fun") badly
+    enough that no text check can classify them -- the partial is surfaced,
+    but no tts_cancel fires until a third word arrives."""
+    fake_ws = FakeWebSocket()
+    client = BargeInClient()
+    release = asyncio.Event()
+    client.responses.script_gated(
+        [make_text_delta_event("Hi ")],
+        release,
+        [make_text_delta_event("there"), make_completed_event(output=[])],
+    )
+    session, fake_stt, fake_tts = make_session(fake_ws, client)
+
+    run_task = await _start_and_commit_gated_turn(fake_ws, session, fake_stt, release)
+
+    fake_stt.push(Transcript(text="wait stop", is_final=False, speech_final=False))
+    await _drive(20)
+
+    assert not any(e["type"] == "tts_cancel" for e in fake_ws.sent)
+    partial_events = [e for e in fake_ws.sent if e["type"] == "stt_partial"]
+    assert {"type": "stt_partial", "text": "wait stop"} in partial_events
+    assert session._turn_active()
+
+    # Release the gate so the still-active turn finishes and teardown's
+    # turn-lock wait doesn't block forever on the frozen turn.
+    release.set()
+    await _drive(30)
 
     fake_ws.queue_disconnect()
     await run_task
@@ -225,7 +259,7 @@ async def test_barge_in_then_new_utterance_commits_fresh_turn() -> None:
 
     run_task = await _start_and_commit_gated_turn(fake_ws, session, fake_stt, release)
 
-    fake_stt.push(Transcript(text="stop now", is_final=False, speech_final=False))
+    fake_stt.push(Transcript(text="stop right now", is_final=False, speech_final=False))
     await _drive(20)
     assert any(e["type"] == "tts_cancel" for e in fake_ws.sent)
     assert session._turn_task is None or session._turn_task.done()
