@@ -58,6 +58,16 @@ function App() {
 
       {state.error && <p className="error-banner">{state.error}</p>}
 
+      {state.notifications.length > 0 && (
+        <ul className="notifications">
+          {state.notifications.map((note, index) => (
+            <li key={index} className="notification">
+              ⏱ {note}
+            </li>
+          ))}
+        </ul>
+      )}
+
       <Transcript
         messages={state.messages}
         isThinking={isThinking}

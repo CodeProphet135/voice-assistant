@@ -31,6 +31,8 @@ export interface AppState {
   toolActivity: ToolActivity[]
   sttPartial: string
   error: string | null
+  /** Fired-timer notifications, appended as each set_timer elapses. */
+  notifications: string[]
 }
 
 export const initialState: AppState = {
@@ -41,6 +43,7 @@ export const initialState: AppState = {
   toolActivity: [],
   sttPartial: '',
   error: null,
+  notifications: [],
 }
 
 /** Local UI actions dispatched alongside the server event stream. */
@@ -152,7 +155,12 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, assistantInProgress: false }
     }
 
-    // tts_start / tts_end / timer_fired: no Phase 1 UI yet.
+    case 'timer_fired': {
+      const label = action.label ? `${action.label} timer` : 'Timer'
+      return { ...state, notifications: [...state.notifications, `${label} done`] }
+    }
+
+    // tts_start / tts_end: no UI yet.
     default: {
       return state
     }

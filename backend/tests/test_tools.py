@@ -2,14 +2,40 @@
 notes need Postgres (skip if unreachable); timers use a real Session with fake
 WS/TTS and sub-tick durations."""
 
+import os
+
+# Session() constructs a real AsyncOpenAI client (never called here); the SDK
+# requires a credential at construction time. Set a harmless placeholder before
+# importing anything under voice_assistant.
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
+
+import asyncio
+
 import httpx
 import pytest
 import pytest_asyncio
 import respx
+from conftest import FakeTTSProvider, FakeWebSocket
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from voice_assistant.agent.tools.notes import list_notes, save_note
+from voice_assistant.agent.tools.registry import ToolContext
+from voice_assistant.agent.tools.timers import set_timer
 from voice_assistant.agent.tools.weather import get_weather
+from voice_assistant.session import Session
+
+
+def _timer_session():
+    ws = FakeWebSocket()
+    session = Session(ws)
+    tts = FakeTTSProvider()
+    session.tts = tts
+    return session, ws, tts
+
+
+async def _drive(n: int = 50):
+    for _ in range(n):
+        await asyncio.sleep(0)
 
 _GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST = "https://api.open-meteo.com/v1/forecast"
@@ -90,3 +116,39 @@ async def test_save_then_list_notes(notes_db):
     out = await list_notes(None)
     assert "buy milk" in out
     assert "call mom" in out
+
+
+async def test_set_timer_returns_immediately_and_schedules():
+    session, _ws, _tts = _timer_session()
+    out = await set_timer(ToolContext(session=session), seconds=300, label="tea")
+    assert "5 minutes" in out
+    assert len(session._timer_tasks) == 1
+    for task in list(session._timer_tasks.values()):
+        task.cancel()
+
+
+async def test_set_timer_rejects_nonpositive():
+    session, _ws, _tts = _timer_session()
+    with pytest.raises(ValueError):
+        await set_timer(ToolContext(session=session), seconds=0, label=None)
+
+
+async def test_timer_fires_and_speaks():
+    session, ws, tts = _timer_session()
+    timer_id = session.schedule_timer(0, "tea")
+    await _drive()
+    assert any(e["type"] == "timer_fired" and e["label"] == "tea" for e in ws.sent)
+    assert any("tea" in phrase for phrase in tts.synthesized)
+    assert ws.sent_bytes, "the timer should have streamed spoken audio"
+    assert timer_id not in session._timer_tasks
+
+
+async def test_timers_cancelled_on_session_teardown():
+    ws = FakeWebSocket()
+    session = Session(ws)
+    session.tts = FakeTTSProvider()
+    session.schedule_timer(1000, "long")
+    assert len(session._timer_tasks) == 1
+    ws.queue_disconnect()
+    await session.run()
+    assert session._timer_tasks == {}

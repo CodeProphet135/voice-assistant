@@ -32,6 +32,7 @@ from voice_assistant.protocol import (
     SttFinalEvent,
     SttPartialEvent,
     TextInputEvent,
+    TimerFiredEvent,
     TtsCancelEvent,
     TtsEndEvent,
     TtsStartEvent,
@@ -128,6 +129,10 @@ class Session:
         self.tts: TTSProvider = self._make_tts_provider()
         self._tts_queue: asyncio.Queue = asyncio.Queue()
         self._turn_task: asyncio.Task | None = None
+
+        # Background countdown timers (set_timer tool), keyed by timer_id, so
+        # teardown can cancel any still pending and nothing leaks on disconnect.
+        self._timer_tasks: dict[str, asyncio.Task] = {}
 
         # What the assistant has recently spoken (one entry per synthesized
         # sentence), used by ``_is_echo`` to recognize our own TTS audio
@@ -320,6 +325,41 @@ class Session:
         await self.emit(TtsCancelEvent())
         await self.emit(StateEvent(state="listening"))
 
+    def schedule_timer(self, seconds: int, label: str | None) -> str:
+        """Start a tracked countdown task and return its id. Called by the
+        ``set_timer`` tool; the task fires ``_fire_timer`` when it elapses."""
+        timer_id = uuid.uuid4().hex
+        self._timer_tasks[timer_id] = asyncio.create_task(
+            self._fire_timer(timer_id, seconds, label)
+        )
+        return timer_id
+
+    async def _fire_timer(self, timer_id: str, seconds: int, label: str | None) -> None:
+        """Wait out the timer, emit ``timer_fired``, then speak a fixed phrase
+        through the existing TTS path. The spoken part takes ``_turn_lock`` so
+        it never talks over an in-flight assistant turn (it just waits its
+        turn -- a background notification needs no barge-in semantics)."""
+        try:
+            await asyncio.sleep(seconds)
+            await self.emit(TimerFiredEvent(timer_id=timer_id, label=label or ""))
+            phrase = f"Your {label} timer is done." if label else "Your timer is done."
+            async with self._turn_lock:
+                with _tracer.start_as_current_span("turn"):
+                    await self.emit(StateEvent(state="speaking"))
+                    await self.emit(TtsStartEvent(sentence_index=0, text=phrase))
+                    with _tracer.start_as_current_span("tts.synthesize") as span:
+                        span.set_attribute("sentence_index", 0)
+                        async for chunk in self.tts.synthesize(phrase):
+                            await self.ws.send_bytes(chunk)
+                    await self.emit(TtsEndEvent())
+                    await self.emit(
+                        StateEvent(state="listening" if self.stt is not None else "idle")
+                    )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._timer_tasks.pop(timer_id, None)
+
     async def _consume_stt(self) -> None:
         """Drain normalized STT events, surfacing partial/final transcripts
         and committing a turn once Deepgram signals the utterance is done.
@@ -471,6 +511,13 @@ class Session:
             except Exception:  # noqa: BLE001
                 pass
         finally:
+            # Cancel any pending countdown timers so a dropped socket can't
+            # leave background tasks running (or trying to emit on a dead ws).
+            for task in list(self._timer_tasks.values()):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            self._timer_tasks.clear()
             # A dropped socket must not leak the STT task/connection.
             await self._stop_stt()
             try:
