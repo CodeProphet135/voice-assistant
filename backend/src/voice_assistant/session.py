@@ -20,6 +20,8 @@ from starlette.websockets import WebSocketDisconnect
 from websockets.exceptions import ConnectionClosed
 
 from voice_assistant.agent.agent import run_agent
+from voice_assistant.agent.tools import registry
+from voice_assistant.agent.tools.registry import ToolContext
 from voice_assistant.config import settings
 from voice_assistant.protocol import (
     ErrorEvent,
@@ -48,8 +50,10 @@ from voice_assistant.telemetry import get_tracer
 _logger = logging.getLogger(__name__)
 _tracer = get_tracer(__name__)
 
-# No tools yet (Phase 4 introduces a registry here).
-_TOOLS: list[dict] = []
+# Tool schemas come from the registry; importing ``registry`` runs the tools
+# package __init__, which imports each tool module so it self-registers before
+# ``definitions()`` is read here.
+_TOOLS: list[dict] = registry.definitions()
 
 # Sentinel pushed onto the TTS queue to signal the agent producer is done
 # (always enqueued last, even on error, so the drain loop always terminates).
@@ -148,10 +152,13 @@ class Session:
         await self._tts_queue.put(sentence)
 
     async def tool_executor(self, name: str, arguments: str, call_id: str) -> str:
-        """Tool dispatch stub. The tool list is empty in Phase 1, so this
-        should never actually be invoked — Phase 4 replaces it with a real
-        registry lookup."""
-        raise NotImplementedError(f"No tools are registered yet (attempted: {name!r})")
+        """Dispatch a tool call through the registry, under a ``tool.execute``
+        span that nests inside the current ``turn`` span (same pattern as
+        ``llm.request``/``tts.synthesize``). ``call_id`` is unused by the
+        registry but kept in the signature ``run_agent`` calls with."""
+        with _tracer.start_as_current_span("tool.execute") as span:
+            span.set_attribute("tool.name", name)
+            return await registry.execute(name, arguments, ToolContext(session=self))
 
     def _make_stt_provider(self) -> STTProvider:
         """Factory seam so tests can inject a fake STT provider without
