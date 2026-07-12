@@ -5,6 +5,78 @@ truth for where the last session left off. Update it before you stop working,
 so the next session (or the next you) doesn't have to reconstruct context from
 `git log`.
 
+## Status: Phase 4 done ✅ (tools — weather, timer, notes — verified live end-to-end)
+
+Phases 0–3 are merged on `main` and Phase 3 is tagged `v0.1.0`. **Phase 4
+(tools) is built, tested, and committed on `main`** in four focused commits.
+`web_search` was deliberately **deferred** (user decision) — the built-in
+OpenAI web_search tool is not wired yet; the three local tools are. Backend is
+**89 passed, 2 skipped** (the 2 skips are the notes tests when no Postgres is
+reachable); frontend typecheck/build/oxlint clean.
+
+Design + plan: `docs/superpowers/specs/2026-07-08-phase-4-tools-design.md` and
+`docs/superpowers/plans/2026-07-08-phase-4-tools.md`.
+
+### Phase 4 — what was built (on `main`)
+- **Tool registry** (`agent/tools/registry.py`): `@tool(name, description,
+  parameters)` decorator → module `_REGISTRY` dict; `definitions()` returns
+  name-sorted Responses flattened tool defs (`strict: True`); `execute(name,
+  args_json, ctx)` dispatches — unknown-tool / bad-JSON return `"Error: ..."`
+  strings, handler exceptions propagate (agent.py's `_execute_tool_call` is the
+  single place that maps them to error output). `ToolContext(session=...)` is
+  the DI seam; notes reach the DB via `db.async_session_factory` directly
+  (imported as a module attr so tests monkeypatch it).
+- **session.py wiring**: `_TOOLS = registry.definitions()`; `tool_executor`
+  runs `registry.execute` under a `tool.execute` OTel span (attr `tool.name`,
+  nests under `turn`). Importing the tools package (`agent/tools/__init__.py`
+  imports `notes, timers, weather`) registers all three before `definitions()`
+  is read.
+- **get_weather** (`weather.py`): Open-Meteo geocode + current forecast via a
+  per-call `httpx.AsyncClient` (keyless), WMO code → spoken phrase, graceful
+  no-match string, HTTP errors raise.
+- **save_note / list_notes** (`notes.py`): SQLAlchemy async against the existing
+  `notes` table; spoken-style summaries.
+- **set_timer** (`timers.py` + session): validates `seconds > 0`, returns a
+  spoken confirmation, and schedules `Session.schedule_timer` →
+  `Session._fire_timer` (tracked in `self._timer_tasks`). On fire: emit
+  `TimerFiredEvent`, then speak a fixed phrase ("Your {label} timer is done.")
+  through the existing TTS path under `_turn_lock` (no LLM call). Pending timers
+  are cancelled in `run()`'s teardown `finally`.
+- **Frontend**: a pure `timer_fired` reducer case appends to
+  `AppState.notifications`; App.tsx renders a small `⏱ … done` banner (themed
+  CSS). Tool chips already worked end-to-end since Phase 1 — unchanged.
+
+### Phase 4 — verified this session
+- Backend: `cd backend && uv run pytest -q` → **89 passed, 2 skipped**;
+  `uv run ruff check .` clean. New: `test_registry.py` (5), `test_tools.py`
+  (weather via respx, notes vs real Postgres, timer fire/cancel).
+- **Notes tests exercised against real Postgres** (port 5432 was held by an
+  unrelated container, so a throwaway `postgres:16` on **5433** was used) →
+  2 passed (not skipped). Fixture uses `join_transaction_mode="create_savepoint"`
+  + outer-transaction rollback; `pytest.skip`s when the DB is unreachable.
+- Frontend: `npm run typecheck` / `build` / `npx oxlint` clean; `pcm-worklet`
+  chunk still emits.
+- **LIVE end-to-end** (real OpenAI + Deepgram + Open-Meteo):
+  - Weather: `ws_client.py --text "what's the weather in Tokyo right now?"` →
+    `tool_call get_weather` → `tool_result "It's currently 24 degrees Celsius
+    and overcast in Tokyo."` → streamed spoken reply, **no 400s** (confirms the
+    strict tool schemas — including set_timer's nullable `label` union — are
+    accepted by the live Responses API).
+  - Timer: "set a 3 second timer for tea" → `set_timer` → confirmation spoken →
+    ~3 s later `timer_fired {label: tea}` → spoken "Your tea timer is done." →
+    116 binary TTS frames total. Full fire/speak path validated live.
+
+### Phase 4 — remaining (human / next session)
+- **Manual browser check** (can't run headlessly): `make dev-backend` +
+  `make dev-frontend`, ask for weather (chip resolves), set a short timer (chip
+  resolves + `⏱ tea timer done` banner appears + phrase is spoken), save then
+  list a note. Everything it depends on is verified via the live CLI round trips
+  + frontend build above.
+- `make db-up` needs port 5432 free — an unrelated `postgres` container
+  currently holds it. Free it before the manual notes demo.
+
+---
+
 ## Status: Phase 3 COMPLETE ✅ (voice out + barge-in — every check passed, incl. human mic)
 
 Phases 0–3 are merged on `main` and tagged **`v0.1.0`**. The self-barge-in
@@ -14,9 +86,9 @@ and fully verified**: baseline / echo ×2 / genuine-interrupt runs via
 `scripts/mic_sim.py` all pass against real Deepgram + OpenAI, **and the human
 browser-speakers barge-in test passed (2026-07-12)** — the assistant finished a
 long answer and stopped to answer a real spoken interruption. Backend is **77
-tests green**; `make lint` clean. Phase 3 has no open checkboxes. **Next up:
-Phase 4 — Tools** (weather, web_search, timers, notes; design spec already
-committed at `75d5136`). Numbering note: "Phase 3" = PLAN.md's/README's
+tests green**; `make lint` clean. Phase 3 has no open checkboxes. (Phase 4 —
+Tools — is now also done; see the Phase 4 section at the very top.) Numbering
+note: "Phase 3" = PLAN.md's/README's
 "Phase 3"; it is the 4th item in the "Full phase plan" list further down.
 
 ### Echo fix — what was built (merged to `main` via `8a74469`)
@@ -405,9 +477,11 @@ Don't mark Phase 1 done without all of:
 4. ✅ Voice out + barge-in (Deepgram TTS, gapless playback, interrupt handling)
    — merged to `main`, tagged `v0.1.0`; self-barge-in echo bug fixed + merged
    (`8a74469`); human mic barge-in check passed (2026-07-12). COMPLETE.
-5. ⬜ Tools (weather, web_search, timers, notes) — **you are here next**
+5. ✅ Tools (weather, timers, notes) — built + tested + verified live on `main`;
+   **web_search deferred**. Only the human browser demo remains. COMPLETE.
 6. ⬜ Polish (full test suite, README diagram + latency table, Docker image,
-   error-handling passes)
+   error-handling passes) — **you are here next**. Consider folding the
+   deferred `web_search` built-in tool in here or into its own slice.
 7. ⬜ Event Timeline + Replay (event sourcing, Temporal-style replay UI) — tag
    `v1.0.0`
 
