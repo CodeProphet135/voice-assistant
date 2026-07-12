@@ -11,7 +11,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import uuid
+from collections import deque
 
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
@@ -53,6 +55,29 @@ _TOOLS: list[dict] = []
 # (always enqueued last, even on error, so the drain loop always terminates).
 _TURN_END = object()
 
+# An interim transcript needs at least this many words before it's treated
+# as substantial enough to barge in on an active turn (see
+# docs/bug-self-barge-in-echo.md) -- a lone word is as likely to be a stray
+# noise or echo onset as genuine speech.
+_MIN_BARGE_IN_WORDS = 2
+
+# Echo-normalization regexes (see Session._is_echo). Separators (dashes/
+# slash) become a space so words either side don't fuse together; everything
+# else that isn't alphanumeric/space is just dropped.
+_ECHO_SEPARATORS_RE = re.compile(r"[-—–/]")
+_ECHO_STRIP_RE = re.compile(r"[^a-z0-9 ]")
+_ECHO_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_for_echo(text: str) -> str:
+    """Lowercase and strip ``text`` down to bare words for echo comparison:
+    dashes/slashes become spaces (so "Nice—hit" -> "nice hit"), remaining
+    punctuation (apostrophes, periods, ...) is deleted outright (so "Here's"
+    -> "heres"), then whitespace runs collapse to single spaces."""
+    text = _ECHO_SEPARATORS_RE.sub(" ", text.lower())
+    text = _ECHO_STRIP_RE.sub("", text)
+    return _ECHO_WHITESPACE_RE.sub(" ", text).strip()
+
 
 class Session:
     """Owns one WebSocket connection's lifecycle and conversation state."""
@@ -83,6 +108,13 @@ class Session:
         self.tts: TTSProvider = self._make_tts_provider()
         self._tts_queue: asyncio.Queue = asyncio.Queue()
         self._turn_task: asyncio.Task | None = None
+
+        # What the assistant has recently spoken (one entry per synthesized
+        # sentence), used by ``_is_echo`` to recognize our own TTS audio
+        # leaking back into the mic. Never cleared on turn end -- echo
+        # transcripts can arrive after tts_end too (playback + STT latency);
+        # the bounded length is the eviction policy.
+        self._spoken_recent: deque[str] = deque(maxlen=20)
 
     async def emit(self, event) -> None:
         """The single seam every server→client event flows through.
@@ -167,6 +199,7 @@ class Session:
                         if not speaking:
                             await self.emit(StateEvent(state="speaking"))
                             speaking = True
+                        self._spoken_recent.append(item)
                         await self.emit(TtsStartEvent(sentence_index=index, text=item))
                         with _tracer.start_as_current_span("tts.synthesize") as span:
                             span.set_attribute("sentence_index", index)
@@ -202,6 +235,28 @@ class Session:
     def _turn_active(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
 
+    def _is_echo(self, text: str) -> bool:
+        """Guess whether ``text`` (an STT transcript) is actually our own
+        TTS audio leaking back into the mic rather than genuine user speech
+        (see docs/bug-self-barge-in-echo.md): compare it, normalized,
+        against ``self._spoken_recent``."""
+        if not self._spoken_recent:
+            return False
+        normalized = _normalize_for_echo(text)
+        if not normalized:
+            return False
+
+        joined = _normalize_for_echo(" ".join(self._spoken_recent))
+        if normalized in joined:
+            return True
+
+        # Fuzzy fallback: Deepgram may mis-transcribe a word of our own
+        # echoed audio, so an exact substring match isn't guaranteed even
+        # when it really is an echo.
+        words = normalized.split()
+        joined_words = set(joined.split())
+        return sum(w in joined_words for w in words) / len(words) >= 0.8
+
     async def _barge_in(self) -> None:
         """Cancel the in-flight assistant turn because the user started
         speaking over it. ``_run_turn``'s cancel path (Task 2a) unwinds the
@@ -233,20 +288,33 @@ class Session:
             async for ev in self.stt.events():
                 if isinstance(ev, Transcript):
                     if not ev.is_final:
-                        if ev.text.strip():
-                            if self._turn_active():
+                        stripped = ev.text.strip()
+                        if stripped:
+                            if self._is_echo(stripped):
+                                # Our own TTS leaking into the mic -- drop it
+                                # entirely: no barge-in, and don't render it
+                                # as a live user bubble either.
+                                continue
+                            if (
+                                self._turn_active()
+                                and len(stripped.split()) >= _MIN_BARGE_IN_WORDS
+                            ):
                                 await self._barge_in()
                             await self.emit(SttPartialEvent(text=ev.text))
                         continue
 
-                    if ev.text.strip():
+                    if ev.text.strip() and not self._is_echo(ev.text):
                         self._stt_buffer.append(ev.text)
 
                     if ev.speech_final:
                         await self._commit_stt_turn()
                 elif isinstance(ev, SpeechStarted):
-                    if self._turn_active():
-                        await self._barge_in()
+                    # Deepgram's VAD fires on any noise -- including our own
+                    # TTS echoing back through the mic -- and carries no text
+                    # to check against _spoken_recent, so it can no longer
+                    # trigger barge-in by itself; a substantial interim
+                    # transcript (above) does that job now.
+                    pass
                 elif isinstance(ev, UtteranceEnd):
                     # Fallback turn-end signal when speech_final never fires.
                     await self._commit_stt_turn()

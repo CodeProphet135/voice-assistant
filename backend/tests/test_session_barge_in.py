@@ -95,10 +95,13 @@ async def _start_and_commit_gated_turn(
     return run_task
 
 
-async def test_speech_started_during_active_turn_barges_in() -> None:
+async def test_speech_started_during_active_turn_does_not_barge_in() -> None:
+    """Deepgram's VAD fires on any noise, including our own TTS echoing back
+    through the mic (docs/bug-self-barge-in-echo.md) -- SpeechStarted alone
+    must no longer cancel an in-flight turn."""
     fake_ws = FakeWebSocket()
     client = BargeInClient()
-    release = asyncio.Event()  # never set: turn stays frozen unless cancelled
+    release = asyncio.Event()
     client.responses.script_gated(
         [make_text_delta_event("Hi ")],
         release,
@@ -111,13 +114,14 @@ async def test_speech_started_during_active_turn_barges_in() -> None:
     fake_stt.push(SpeechStarted())
     await _drive(20)
 
-    assert any(e["type"] == "tts_cancel" for e in fake_ws.sent), "expected a tts_cancel event"
-    state_events = [e["state"] for e in fake_ws.sent if e["type"] == "state"]
-    assert state_events[-1] == "listening"
-    assert not any(
-        e["type"] == "assistant_done" for e in fake_ws.sent
-    ), "the gated reply must never complete once barged in"
-    assert session._turn_task is None or session._turn_task.done()
+    assert not any(e["type"] == "tts_cancel" for e in fake_ws.sent)
+    assert session._turn_active(), "SpeechStarted alone must not cancel the turn"
+
+    # Releasing the gate lets the (never-barged-into) reply complete normally.
+    release.set()
+    await _drive(30)
+
+    assert any(e["type"] == "assistant_done" for e in fake_ws.sent)
 
     fake_ws.queue_disconnect()
     await run_task
@@ -136,14 +140,48 @@ async def test_nonempty_interim_during_active_turn_barges_in() -> None:
 
     run_task = await _start_and_commit_gated_turn(fake_ws, session, fake_stt, release)
 
-    fake_stt.push(Transcript(text="wait", is_final=False, speech_final=False))
+    fake_stt.push(Transcript(text="wait stop", is_final=False, speech_final=False))
     await _drive(20)
 
     assert any(e["type"] == "tts_cancel" for e in fake_ws.sent), "expected a tts_cancel event"
     partial_events = [e for e in fake_ws.sent if e["type"] == "stt_partial"]
-    assert {"type": "stt_partial", "text": "wait"} in partial_events
+    assert {"type": "stt_partial", "text": "wait stop"} in partial_events
     assert not any(e["type"] == "assistant_done" for e in fake_ws.sent)
     assert session._turn_task is None or session._turn_task.done()
+
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+async def test_single_word_interim_during_active_turn_does_not_barge_in() -> None:
+    """A single-word interim is too weak a signal to interrupt a turn (it's
+    the kind of fragment a stray noise or echo onset produces) -- the
+    partial is still surfaced, but no tts_cancel fires."""
+    fake_ws = FakeWebSocket()
+    client = BargeInClient()
+    release = asyncio.Event()  # never set: turn stays frozen unless cancelled
+    client.responses.script_gated(
+        [make_text_delta_event("Hi ")],
+        release,
+        [make_text_delta_event("there"), make_completed_event(output=[])],
+    )
+    session, fake_stt, fake_tts = make_session(fake_ws, client)
+
+    run_task = await _start_and_commit_gated_turn(fake_ws, session, fake_stt, release)
+
+    fake_stt.push(Transcript(text="wait", is_final=False, speech_final=False))
+    await _drive(20)
+
+    assert not any(e["type"] == "tts_cancel" for e in fake_ws.sent)
+    partial_events = [e for e in fake_ws.sent if e["type"] == "stt_partial"]
+    assert {"type": "stt_partial", "text": "wait"} in partial_events
+    assert session._turn_active()
+
+    # Release the gate so the still-active turn (never barged into) finishes
+    # -- otherwise _stop_stt's turn-lock wait during teardown below would
+    # block forever on the frozen turn.
+    release.set()
+    await _drive(30)
 
     fake_ws.queue_disconnect()
     await run_task
@@ -187,7 +225,7 @@ async def test_barge_in_then_new_utterance_commits_fresh_turn() -> None:
 
     run_task = await _start_and_commit_gated_turn(fake_ws, session, fake_stt, release)
 
-    fake_stt.push(SpeechStarted())
+    fake_stt.push(Transcript(text="stop now", is_final=False, speech_final=False))
     await _drive(20)
     assert any(e["type"] == "tts_cancel" for e in fake_ws.sent)
     assert session._turn_task is None or session._turn_task.done()
