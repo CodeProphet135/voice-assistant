@@ -56,7 +56,7 @@ make lint       # ruff + tsc
 - [x] Phase 1 — Text chat loop end-to-end
 - [x] Phase 2 — Voice in (STT)
 - [x] Phase 3 — Voice out + barge-in
-- [ ] Phase 4 — Tools
+- [x] Phase 4 — Tools
 - [ ] Phase 5 — Polish
 - [ ] Phase 6 — Event Timeline + Replay
 
