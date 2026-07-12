@@ -94,6 +94,12 @@ then a whole-branch review), each on Sonnet. Commits, in order:
       dev-backend` + `make dev-frontend`, click 🎤, let the assistant start
       speaking, then talk over it: audio should stop <300 ms with no garbled
       playback, and a fresh reply should start. Can't be run headlessly (no mic).
+      **⚠️ First attempt (2026-07-11) hit a real bug: with speakers, the
+      assistant barges in on ITSELF** — its own TTS echo reaches the mic
+      (Chrome AEC doesn't cancel Web Audio playback), cancels the turn ~1s in,
+      and even commits the echo as a user turn (self-reply loop). Diagnosed +
+      reproduced deterministically; fix deferred. Full analysis + fix options:
+      [docs/bug-self-barge-in-echo.md](docs/bug-self-barge-in-echo.md).
 
 ### Wrap-up still pending for Phase 3
 - Merge `phase-3-voice-out` → `main` and tag **`v0.1.0`** (per PLAN Phase 3).
