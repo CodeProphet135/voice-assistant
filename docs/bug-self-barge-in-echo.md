@@ -1,6 +1,8 @@
 # Bug: TTS cuts off mid-reply — assistant barges in on itself (speaker echo)
 
-**Status:** diagnosed, not yet fixed (2026-07-11)
+**Status:** FIXED (2026-07-12) — see [The fix](#the-fix-2026-07-12) below; scripted
+verification passed (baseline / echo ×2 / interrupt). The human
+speakers-at-normal-volume check is still pending.
 **Symptom:** during the manual browser mic test, the assistant starts speaking
 but the audio stops after ~1 second and never finishes the reply. The vite
 terminal shows `ws proxy error: Error: write EPIPE` around the same time.
@@ -92,6 +94,64 @@ and replies should play to completion.
 
 Options 1+2 make barge-in robust regardless of the user's audio setup;
 option 3 attacks the echo itself. They compose.
+
+## The fix (2026-07-12)
+
+Options 1+2 implemented in `backend/src/voice_assistant/session.py`
+(commits `e896bdd`, `f8fc4fa`, `e8af353`, `ec7c0cf` — the latter three driven
+by live-run failures; option 3 was not needed to pass the scripted runs and
+remains available if the human speakers test still shows problems):
+
+- **Echo tracking + scoring.** `Session._spoken_recent` (deque, maxlen 20)
+  records every sentence handed to TTS. `_echo_score(text)` matches a
+  transcript against the joined spoken text: 1.0 on a normalized-substring hit
+  or a space-insensitive (compact) substring hit (≥6 chars — Deepgram
+  resegments, e.g. `"under water"` → `"underwater"`), else the fraction of
+  transcript words found in the spoken words (with compact containment for
+  words ≥4 chars). `_is_echo` = score ≥ 0.6 — live data showed misheard echo
+  fragments (`"A fun fact. Rome"` for "A fun fact: Roman…") score ≥ 60% while
+  genuine phrases score ≤ ~30%.
+- **Echo transcripts are dropped entirely**: interims classified as echo emit
+  no `stt_partial` and never barge in; finals classified as echo never enter
+  the commit buffer — this is what kills the self-reply loop.
+- **`SpeechStarted` no longer triggers barge-in** (fires on any noise,
+  carries no text to check).
+- **Two-tier interim barge gate**: a non-echo interim barges in at ≥3 words,
+  or at exactly 2 words when its echo score is < 0.4 (live: genuine
+  `"Wait. Stop."` scores 0.0 and cancels in ~1.4s; misheard echo `"The fun"`
+  scores 0.5 and stays blocked). 1-word interims never barge.
+- **Genuine finals barge in before committing**: Deepgram can jump from a
+  2-word interim straight to `speech_final` (live run 3), so
+  `_commit_stt_turn` now cancels an active turn before launching the reply —
+  the assistant can't keep talking over a committed user turn.
+
+### Verification results (2026-07-12, live Deepgram + OpenAI, on `ec7c0cf`)
+
+1. **Baseline**: reply plays to completion, `TTS COMPLETE` + `tts_end`,
+   zero `tts_cancel`. ✅
+2. **Echo ×2**: no `tts_cancel`, `TTS COMPLETE` + `tts_end`, no leaked
+   partials, and no self-committed turn during the 5s post-`tts_end` idle. ✅
+3. **Interrupt**: `tts_cancel` **~1.4s** after the interruption starts
+   (2-word strict tier on `"Wait. Stop."`), `stt_final: "Wait. Stop. What is
+   your name?"`, fresh reply plays to completion. Within the expected
+   1.0–1.5s window for interim-based triggering. ✅
+4. `uv run pytest -q` → **77 passed** (was 49; echo-guard + regression tests
+   in `test_session_echo_guard.py`, updated `test_session_barge_in.py`);
+   `make lint` clean. ✅
+
+Human check still pending: browser + built-in speakers at normal volume — the
+assistant must finish a long answer, and talking over it must stop it quickly.
+
+### Known tradeoff of the 0.6 threshold
+
+A user who *quotes the assistant's own words back* (e.g. "did it get stronger
+under water?" right after the assistant said so) can score ≥0.6 and be
+silently swallowed as echo — no partial, no commit, no UI feedback — for as
+long as the phrase stays within the last ~20 spoken sentences
+(`_spoken_recent` never clears). The 0.6/0.4 constants come from a handful of
+live runs (misheard echo ≥0.6, genuine speech ≤~0.3); if this ever bites,
+rerun the scripted verification while retuning, and consider fix option 3
+(AEC-visible playback) which would let the thresholds relax.
 
 ## Reproduction (scripted — no mic or browser needed)
 

@@ -5,17 +5,34 @@ truth for where the last session left off. Update it before you stop working,
 so the next session (or the next you) doesn't have to reconstruct context from
 `git log`.
 
-## Status: Phase 3 done ✅ (voice out + barge-in — voice-out verified live end-to-end)
+## Status: Phase 3 done ✅ + self-barge-in echo bug FIXED (scripted verification passed)
 
-Phases 0–2 are done and committed on `main`. **Phase 3 (voice out — Deepgram
-TTS, gapless browser playback — plus barge-in interruption) is built, reviewed,
-and merge-ready on branch `phase-3-voice-out`** (not yet merged to `main` /
-tagged `v0.1.0` — that's the wrap-up step). Backend is **49 tests green**;
-frontend typecheck/build/lint clean. The full voice-out path was verified LIVE
-against real Deepgram + OpenAI. The only unchecked box is the human-at-a-mic
-**barge-in** browser test (can't run headlessly). Numbering note: this is
-PLAN.md's "Phase 3" and README's "Phase 3"; it is the 4th item in the "Full
-phase plan" list further down.
+Phases 0–3 are merged on `main` and tagged **`v0.1.0`**. The self-barge-in
+echo bug the first human mic test hit (assistant's speaker audio trips its own
+barge-in and self-replies — see `docs/bug-self-barge-in-echo.md`) is **fixed
+and live-verified** on branch `fix/self-barge-in-echo`: baseline / echo ×2 /
+genuine-interrupt runs via `scripts/mic_sim.py` all pass against real
+Deepgram + OpenAI. Backend is **77 tests green**; `make lint` clean. The only
+remaining human check is the browser speakers test (can't run headlessly).
+Numbering note: "Phase 3" = PLAN.md's/README's "Phase 3"; it is the 4th item
+in the "Full phase plan" list further down.
+
+### Echo fix — what was built (branch `fix/self-barge-in-echo`)
+
+Four commits (sdd task; brief + per-fix live-failure evidence in
+`.superpowers/sdd/`): `366b829` docs+mic_sim, `e896bdd` echo guard + gating,
+`f8fc4fa` segmentation robustness ("under water"→"underwater"), `e8af353`
+misheard-echo tuning (0.6 threshold, 3-word barge min), `ec7c0cf` barge on
+genuine finals + 2-word strict tier. Full design + verification log:
+[docs/bug-self-barge-in-echo.md](docs/bug-self-barge-in-echo.md). Key
+mechanics: `_spoken_recent` deque + `_echo_score` (substring / compact
+substring / word-overlap vs recently spoken sentences); echo transcripts are
+dropped entirely (no partial, no barge, no commit); `SpeechStarted` never
+barges; non-echo interims barge at ≥3 words or 2 words with score <0.4;
+`_commit_stt_turn` barges before committing a genuine final while speaking.
+Tuning constants came from live Deepgram behavior — misheard echo scores
+≥0.6, genuine speech ≤~0.3; don't retune them from intuition, rerun the
+scripted verification in the bug doc.
 
 ### Phase 3 — what was built (branch `phase-3-voice-out`)
 
@@ -91,22 +108,29 @@ then a whole-branch review), each on Sonnet. Commits, in order:
 - [x] Full-turn OTel spans (`turn` → `llm.request`/`tts.synthesize`) — confirmed
       in the live trace.
 - [ ] **Manual browser BARGE-IN test** — the one remaining human check. `make
-      dev-backend` + `make dev-frontend`, click 🎤, let the assistant start
-      speaking, then talk over it: audio should stop <300 ms with no garbled
-      playback, and a fresh reply should start. Can't be run headlessly (no mic).
+      dev-backend` + `make dev-frontend`, click 🎤, **built-in speakers at
+      normal volume** (headphones would mask the echo path), let the assistant
+      answer something long — it must finish speaking; then talk over it — it
+      must stop within ~1–2s (barge-in now triggers on interims/finals, not
+      raw VAD) and answer the interruption. Can't be run headlessly (no mic).
       **⚠️ First attempt (2026-07-11) hit a real bug: with speakers, the
       assistant barges in on ITSELF** — its own TTS echo reaches the mic
       (Chrome AEC doesn't cancel Web Audio playback), cancels the turn ~1s in,
-      and even commits the echo as a user turn (self-reply loop). Diagnosed +
-      reproduced deterministically; fix deferred. Full analysis + fix options:
-      [docs/bug-self-barge-in-echo.md](docs/bug-self-barge-in-echo.md).
+      and even commits the echo as a user turn (self-reply loop). **FIXED
+      2026-07-12** on `fix/self-barge-in-echo` and verified with the scripted
+      baseline/echo/interrupt runs. Full analysis, fix design + verification
+      log: [docs/bug-self-barge-in-echo.md](docs/bug-self-barge-in-echo.md).
 
 ### Wrap-up still pending for Phase 3
-- Merge `phase-3-voice-out` → `main` and tag **`v0.1.0`** (per PLAN Phase 3).
-- The manual mic barge-in check above (human).
-- `.superpowers/sdd/progress.md` holds the per-task ledger + two logged benign
+- ~~Merge `phase-3-voice-out` → `main` and tag `v0.1.0`~~ — done (`e3bc61a`,
+  tag `v0.1.0` exists).
+- The manual mic barge-in check above (human) — everything scriptable about
+  it is verified; only the real-mic/speaker acoustic loop remains.
+- `.superpowers/sdd/progress.md` holds the per-task ledger + logged benign
   minors (a `_commit_stt_turn` lock-acquisition race that can settle to `idle`
-  instead of `listening` on a same-tick `stop`; both are non-blocking).
+  instead of `listening` on a same-tick `stop`; `_spoken_recent` never clears,
+  so a genuine short user final that closely matches something the assistant
+  said in its last ~20 sentences gets swallowed as echo; both non-blocking).
 
 ---
 
@@ -379,8 +403,8 @@ Don't mark Phase 1 done without all of:
 3. ✅ Voice in (Deepgram STT, AudioWorklet mic capture) — verified live
    end-to-end; only the human browser-mic check remains
 4. ✅ Voice out + barge-in (Deepgram TTS, gapless playback, interrupt handling)
-   — built + reviewed on `phase-3-voice-out`, voice-out verified live; pending
-   merge to `main` + tag `v0.1.0` + human mic barge-in check
+   — merged to `main`, tagged `v0.1.0`; self-barge-in echo bug fixed +
+   live-verified (`fix/self-barge-in-echo`); human mic barge-in check pending
 5. ⬜ Tools (weather, web_search, timers, notes) — **you are here next**
 6. ⬜ Polish (full test suite, README diagram + latency table, Docker image,
    error-handling passes)
