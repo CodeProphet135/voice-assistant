@@ -1,8 +1,9 @@
 # Bug: TTS cuts off mid-reply — assistant barges in on itself (speaker echo)
 
-**Status:** FIXED (2026-07-12) — see [The fix](#the-fix-2026-07-12) below; scripted
-verification passed (baseline / echo ×2 / interrupt). The human
-speakers-at-normal-volume check is still pending.
+**Status:** FIXED (2026-07-12) — see [The fix](#the-fix-2026-07-12) below.
+Scripted verification passed (baseline / echo ×2 / interrupt) **and the human
+browser test with built-in speakers at normal volume passed**: the assistant
+finished a long answer and stopped to answer a real spoken interruption.
 **Symptom:** during the manual browser mic test, the assistant starts speaking
 but the audio stops after ~1 second and never finishes the reply. The vite
 terminal shows `ws proxy error: Error: write EPIPE` around the same time.
@@ -139,8 +140,9 @@ remains available if the human speakers test still shows problems):
    in `test_session_echo_guard.py`, updated `test_session_barge_in.py`);
    `make lint` clean. ✅
 
-Human check still pending: browser + built-in speakers at normal volume — the
-assistant must finish a long answer, and talking over it must stop it quickly.
+Human check (browser + built-in speakers at normal volume): **PASSED
+(2026-07-12)** — the assistant finished a long answer, and talking over it
+stopped it and it answered the interruption.
 
 ### Known tradeoff of the 0.6 threshold
 
