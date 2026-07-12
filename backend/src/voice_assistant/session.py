@@ -250,12 +250,25 @@ class Session:
         if normalized in joined:
             return True
 
+        # Space-insensitive substring: Deepgram segments words differently
+        # than our TTS text (live run: spoken "under water" came back as
+        # "underwater"), and one such difference must not defeat the guard.
+        joined_compact = joined.replace(" ", "")
+        if normalized.replace(" ", "") in joined_compact:
+            return True
+
         # Fuzzy fallback: Deepgram may mis-transcribe a word of our own
         # echoed audio, so an exact substring match isn't guaranteed even
-        # when it really is an echo.
+        # when it really is an echo. A word also counts as matched if it's
+        # long enough (>= 4 chars, to avoid trivial hits) and appears inside
+        # the space-stripped spoken text -- same segmentation tolerance as
+        # above, applied per word.
         words = normalized.split()
         joined_words = set(joined.split())
-        return sum(w in joined_words for w in words) / len(words) >= 0.8
+        matched = sum(
+            w in joined_words or (len(w) >= 4 and w in joined_compact) for w in words
+        )
+        return matched / len(words) >= 0.8
 
     async def _barge_in(self) -> None:
         """Cancel the in-flight assistant turn because the user started

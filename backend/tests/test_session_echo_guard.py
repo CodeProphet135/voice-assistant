@@ -329,3 +329,32 @@ def test_is_echo_fuzzy_word_substitution_below_threshold() -> None:
     session._spoken_recent.append("Nice hit me with it")
     # Only 2/5 words match (40%) -- must not classify as echo.
     assert session._is_echo("nice sit see with sat") is False
+
+
+# Exact spoken sentence + echo interim from the live mic_sim.py --echo run
+# that slipped past the first version of the guard: Deepgram compounded
+# "under water" into "underwater", so the transcript was neither a
+# (space-sensitive) substring of the spoken text nor >=80% word-overlap.
+_LIVE_SPOKEN_SENTENCE = (
+    "The Romans used a concrete recipe that actually got stronger under water, "
+    "which is why many of their harbors and sea walls have survived for two "
+    "thousand years."
+)
+
+
+def test_is_echo_survives_word_segmentation_differences() -> None:
+    """Regression (live echo run): one word-segmentation difference in
+    Deepgram's transcription of our own audio must not defeat the guard."""
+    session = _bare_session()
+    session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE)
+    assert session._is_echo("got stronger underwater, which") is True
+
+
+def test_is_echo_segmentation_tolerance_does_not_catch_genuine_speech() -> None:
+    """Inverse guard: the space-insensitive matching must not classify a
+    genuine phrase that merely shares a compound word with the spoken text
+    as echo ("underwater" alone matches space-stripped "under water", but
+    that's 1/4 words -- far below the 80% threshold)."""
+    session = _bare_session()
+    session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE)
+    assert session._is_echo("what about underwater cities") is False
