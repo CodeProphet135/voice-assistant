@@ -55,15 +55,29 @@ _TOOLS: list[dict] = []
 # (always enqueued last, even on error, so the drain loop always terminates).
 _TURN_END = object()
 
-# An interim transcript needs at least this many words before it's treated
-# as substantial enough to barge in on an active turn (see
+# An interim transcript with at least this many words barges in on an active
+# turn whenever it isn't classified as echo (see
 # docs/bug-self-barge-in-echo.md). Three, not two: live echo runs showed
 # Deepgram mishears short echo fragments badly enough ("A fun" came back as
-# "The fun") that no text check can classify them, while genuine
-# interruptions reach three words within the first interim or two.
+# "The fun") that the echo threshold alone can't screen them.
 _MIN_BARGE_IN_WORDS = 3
 
-# Echo-normalization regexes (see Session._is_echo). Separators (dashes/
+# A transcript whose echo score reaches this is our own TTS audio leaking
+# back into the mic. 0.6, not higher: live runs showed misheard echo
+# fragments score >= 60% word overlap ("A fun fact. Rome" misheard from
+# "A fun fact: Roman..." scores 75%) while genuine phrases stay <= ~30% --
+# clean separation.
+_ECHO_THRESHOLD = 0.6
+
+# Strict tier for 2-word interims (live run 3: Deepgram can stop at a 2-word
+# interim and jump straight to the final, so waiting for a third word can
+# mean never barging at all). Fragments that short can't be reliably
+# classified at _ECHO_THRESHOLD -- misheard echo "The fun" scores 0.5 while
+# genuine "wait stop" scores 0.0 -- so a 2-word interim barges only when its
+# echo score is near zero. 1-word interims never barge.
+_TWO_WORD_BARGE_MAX_SCORE = 0.4
+
+# Echo-normalization regexes (see Session._echo_score). Separators (dashes/
 # slash) become a space so words either side don't fuse together; everything
 # else that isn't alphanumeric/space is just dropped.
 _ECHO_SEPARATORS_RE = re.compile(r"[-—–/]")
@@ -237,20 +251,20 @@ class Session:
     def _turn_active(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
 
-    def _is_echo(self, text: str) -> bool:
-        """Guess whether ``text`` (an STT transcript) is actually our own
-        TTS audio leaking back into the mic rather than genuine user speech
-        (see docs/bug-self-barge-in-echo.md): compare it, normalized,
-        against ``self._spoken_recent``."""
+    def _echo_score(self, text: str) -> float:
+        """Match strength of ``text`` (an STT transcript) against what the
+        assistant recently spoke (see docs/bug-self-barge-in-echo.md): 1.0
+        on a substring hit, otherwise the fuzzy word-overlap ratio, 0.0 when
+        there is nothing to compare."""
         if not self._spoken_recent:
-            return False
+            return 0.0
         normalized = _normalize_for_echo(text)
         if not normalized:
-            return False
+            return 0.0
 
         joined = _normalize_for_echo(" ".join(self._spoken_recent))
         if normalized in joined:
-            return True
+            return 1.0
 
         # Space-insensitive substring: Deepgram segments words differently
         # than our TTS text (live run: spoken "under water" came back as
@@ -260,23 +274,25 @@ class Session:
         joined_compact = joined.replace(" ", "")
         compact = normalized.replace(" ", "")
         if len(compact) >= 6 and compact in joined_compact:
-            return True
+            return 1.0
 
         # Fuzzy fallback: Deepgram may mis-transcribe a word of our own
         # echoed audio, so an exact substring match isn't guaranteed even
         # when it really is an echo. A word also counts as matched if it's
         # long enough (>= 4 chars, to avoid trivial hits) and appears inside
         # the space-stripped spoken text -- same segmentation tolerance as
-        # above, applied per word. Threshold 0.6: live runs showed misheard
-        # echo fragments score >= 60% overlap while genuine phrases stay
-        # <= ~30% -- clean separation (the original 0.8 let "A fun fact.
-        # Rome", misheard from "A fun fact: Roman...", commit at 75%).
+        # above, applied per word.
         words = normalized.split()
         joined_words = set(joined.split())
         matched = sum(
             w in joined_words or (len(w) >= 4 and w in joined_compact) for w in words
         )
-        return matched / len(words) >= 0.6
+        return matched / len(words)
+
+    def _is_echo(self, text: str) -> bool:
+        """Whether ``text`` is our own TTS audio leaking back into the mic
+        rather than genuine user speech."""
+        return self._echo_score(text) >= _ECHO_THRESHOLD
 
     async def _barge_in(self) -> None:
         """Cancel the in-flight assistant turn because the user started
@@ -311,14 +327,19 @@ class Session:
                     if not ev.is_final:
                         stripped = ev.text.strip()
                         if stripped:
-                            if self._is_echo(stripped):
+                            score = self._echo_score(stripped)
+                            if score >= _ECHO_THRESHOLD:
                                 # Our own TTS leaking into the mic -- drop it
                                 # entirely: no barge-in, and don't render it
                                 # as a live user bubble either.
                                 continue
-                            if (
-                                self._turn_active()
-                                and len(stripped.split()) >= _MIN_BARGE_IN_WORDS
+                            word_count = len(stripped.split())
+                            if self._turn_active() and (
+                                word_count >= _MIN_BARGE_IN_WORDS
+                                or (
+                                    word_count == 2
+                                    and score < _TWO_WORD_BARGE_MAX_SCORE
+                                )
                             ):
                                 await self._barge_in()
                             await self.emit(SttPartialEvent(text=ev.text))
@@ -354,6 +375,16 @@ class Session:
         self._stt_buffer = []
         if not utterance:
             return
+
+        # Echo finals never reach the buffer (dropped in _consume_stt), so a
+        # non-empty utterance committing while a turn is still speaking is
+        # genuine user speech -- stop talking before answering it. Needed
+        # because Deepgram can jump from a 2-word interim straight to the
+        # final (live run 3), leaving the interim barge gate never fired.
+        # Also guarantees the old turn task is cancelled and awaited before
+        # self._turn_task is reassigned below.
+        if self._turn_active():
+            await self._barge_in()
 
         await self.emit(SttFinalEvent(text=utterance))
         self._turn_task = asyncio.create_task(self._run_turn(utterance))

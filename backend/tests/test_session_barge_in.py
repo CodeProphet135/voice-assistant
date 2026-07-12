@@ -153,14 +153,15 @@ async def test_nonempty_interim_during_active_turn_barges_in() -> None:
     await run_task
 
 
-async def test_two_word_interim_during_active_turn_does_not_barge_in() -> None:
-    """Two words are still below the barge-in minimum: live echo runs showed
-    Deepgram mishears short echo fragments ("A fun" -> "The fun") badly
-    enough that no text check can classify them -- the partial is surfaced,
-    but no tts_cancel fires until a third word arrives."""
+async def test_two_word_low_score_interim_during_active_turn_barges_in() -> None:
+    """Addendum 2 (live run 3): Deepgram can stop at a 2-word interim and
+    jump straight to the final, so a 2-word interim whose echo score is
+    near zero ("wait stop" resembles nothing we spoke) is a genuine
+    interruption and must barge. (2-word fragments that DO resemble spoken
+    text stay blocked -- see test_session_echo_guard.py.)"""
     fake_ws = FakeWebSocket()
     client = BargeInClient()
-    release = asyncio.Event()
+    release = asyncio.Event()  # never set: the turn only ends via the barge-in
     client.responses.script_gated(
         [make_text_delta_event("Hi ")],
         release,
@@ -173,15 +174,10 @@ async def test_two_word_interim_during_active_turn_does_not_barge_in() -> None:
     fake_stt.push(Transcript(text="wait stop", is_final=False, speech_final=False))
     await _drive(20)
 
-    assert not any(e["type"] == "tts_cancel" for e in fake_ws.sent)
+    assert any(e["type"] == "tts_cancel" for e in fake_ws.sent), "expected a tts_cancel event"
     partial_events = [e for e in fake_ws.sent if e["type"] == "stt_partial"]
     assert {"type": "stt_partial", "text": "wait stop"} in partial_events
-    assert session._turn_active()
-
-    # Release the gate so the still-active turn finishes and teardown's
-    # turn-lock wait doesn't block forever on the frozen turn.
-    release.set()
-    await _drive(30)
+    assert session._turn_task is None or session._turn_task.done()
 
     fake_ws.queue_disconnect()
     await run_task

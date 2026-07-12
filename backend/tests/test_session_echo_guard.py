@@ -387,8 +387,9 @@ def test_is_echo_misheard_final_meets_lowered_threshold() -> None:
 def test_is_echo_misheard_short_interim_stays_unclassified() -> None:
     """The live run-2 interim "The fun" (misheard "A fun") scores only 1/2
     (50%) -- below even the lowered threshold. That's fine: fragments this
-    short can't be reliably text-classified, which is exactly why
-    _MIN_BARGE_IN_WORDS is 3 (see the integration test below)."""
+    short can't be reliably text-classified, which is why 2-word interims
+    only barge when their echo score is near zero (the strict tier -- see
+    the integration tests below)."""
     session = _bare_session()
     session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE_2)
     assert session._is_echo("The fun") is False
@@ -408,8 +409,9 @@ def test_is_echo_compact_substring_requires_min_length() -> None:
 
 async def test_misheard_short_echo_interim_does_not_barge() -> None:
     """Live run 2: the echo interim "The fun" isn't classifiable as echo
-    (50% overlap), so it IS surfaced as a partial -- but at 2 words it sits
-    below _MIN_BARGE_IN_WORDS and must not cancel the turn."""
+    (50% overlap), so it IS surfaced as a partial -- but as a 2-word interim
+    whose echo score (0.5) is above the strict tier's near-zero bar, it must
+    not cancel the turn."""
     fake_ws = FakeWebSocket()
     release = asyncio.Event()
     session, fake_stt, fake_tts, client = _make_gated_session(
@@ -484,3 +486,75 @@ async def test_resegmented_echo_interim_is_dropped() -> None:
     await _drive(30)
     fake_ws.queue_disconnect()
     await run_task
+
+
+# --- 10. Addendum 2 (live run 3): genuine final barges; strict 2-word tier --
+
+
+async def test_genuine_final_while_speaking_barges_in_then_commits() -> None:
+    """Live run 3: Deepgram's interims stopped at 2 words and jumped straight
+    to the final "Wait. Stop. What is your name?", so the interim gate never
+    fired and the assistant spoke over the user to completion. A genuine
+    (non-echo) final committing while a turn is active must barge in first
+    (tts_cancel before stt_final), then answer the interruption."""
+    fake_ws = FakeWebSocket()
+    release = asyncio.Event()  # never set: the gated reply only ends via barge-in
+    session, fake_stt, fake_tts, client = _make_gated_session(fake_ws, release)
+
+    run_task = await _start_turn_with_spoken_sentence(fake_ws, session, fake_stt, release)
+
+    # Fresh scripted turn for the interruption's reply.
+    client.responses.script(
+        [
+            make_text_delta_event("I am "),
+            make_text_delta_event("Aura."),
+            make_completed_event(output=[]),
+        ]
+    )
+    fake_stt.push(
+        Transcript(text="Wait. Stop. What is your name?", is_final=True, speech_final=True)
+    )
+    await _drive(40)
+
+    interrupt_final = {"type": "stt_final", "text": "Wait. Stop. What is your name?"}
+    assert any(e["type"] == "tts_cancel" for e in fake_ws.sent), "expected a tts_cancel event"
+    assert interrupt_final in fake_ws.sent
+    cancel_index = next(i for i, e in enumerate(fake_ws.sent) if e["type"] == "tts_cancel")
+    assert cancel_index < fake_ws.sent.index(interrupt_final), (
+        "the in-flight turn must be cancelled BEFORE the interruption commits"
+    )
+
+    # The interruption got a fresh reply; the gated one never completed.
+    assert len(client.responses.calls) == 2
+    done_events = [e for e in fake_ws.sent if e["type"] == "assistant_done"]
+    assert len(done_events) == 1
+    assert done_events[0]["text"] == "I am Aura."
+
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+def test_echo_score_substring_hit_is_full_strength() -> None:
+    session = _bare_session()
+    session._spoken_recent.append("Here is a fun fact about Rome.")
+    assert session._echo_score("fun fact about") == 1.0
+
+
+def test_echo_score_compact_substring_hit_is_full_strength() -> None:
+    session = _bare_session()
+    session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE)
+    assert session._echo_score("got stronger underwater, which") == 1.0
+
+
+def test_echo_score_empty_spoken_recent_is_zero() -> None:
+    assert _bare_session()._echo_score("anything at all") == 0.0
+
+
+def test_echo_score_live_worked_examples() -> None:
+    """The two live fragments the strict 2-word tier separates: misheard
+    echo "The fun" scores 0.5 (blocked from barging), genuine "wait stop"
+    scores 0.0 (barges)."""
+    session = _bare_session()
+    session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE_2)
+    assert session._echo_score("The fun") == 0.5
+    assert session._echo_score("wait stop") == 0.0
