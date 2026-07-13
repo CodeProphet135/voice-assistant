@@ -30,8 +30,8 @@ export function SessionDetail() {
             <Replay events={events} cursor={cursor} onCursor={setCursor} />
             <EventInspector
               events={events}
-              selected={Math.min(cursor, events.length - 1)}
-              onSelect={setCursor}
+              selected={cursor - 1}
+              onSelect={(i) => setCursor(i + 1)}
             />
           </div>
         </>
