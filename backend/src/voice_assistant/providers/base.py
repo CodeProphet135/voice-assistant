@@ -48,7 +48,15 @@ class UtteranceEnd:
     """
 
 
-SttEvent = Transcript | SpeechStarted | UtteranceEnd
+@dataclass
+class SttClosed:
+    """Terminal normalized event: the STT connection dropped and bounded
+    auto-reconnect was exhausted. ``Session`` surfaces this as an error and
+    settles the pipeline back to idle; the user restarts the mic to retry.
+    """
+
+
+SttEvent = Transcript | SpeechStarted | UtteranceEnd | SttClosed
 
 
 class STTProvider(Protocol):

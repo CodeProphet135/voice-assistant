@@ -41,6 +41,7 @@ from voice_assistant.protocol import (
 )
 from voice_assistant.providers.base import (
     SpeechStarted,
+    SttClosed,
     STTProvider,
     Transcript,
     TTSProvider,
@@ -414,6 +415,23 @@ class Session:
                 elif isinstance(ev, UtteranceEnd):
                     # Fallback turn-end signal when speech_final never fires.
                     await self._commit_stt_turn()
+                elif isinstance(ev, SttClosed):
+                    # STT dropped and bounded reconnect was exhausted. Surface
+                    # it and settle to idle; detach the (dead) provider without
+                    # calling _stop_stt (that would cancel-and-await this very
+                    # task). The user restarts the mic to retry.
+                    await self.emit(
+                        ErrorEvent(
+                            message="Speech recognition disconnected — please restart the mic."
+                        )
+                    )
+                    await self.emit(StateEvent(state="idle"))
+                    provider, self.stt = self.stt, None
+                    self._stt_task = None
+                    if provider is not None:
+                        with contextlib.suppress(Exception):  # noqa: BLE001
+                            await provider.aclose()
+                    return
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - never let a bad transcript kill the socket

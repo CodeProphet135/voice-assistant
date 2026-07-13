@@ -17,7 +17,13 @@ from collections.abc import AsyncIterator
 from deepgram import AsyncDeepgramClient
 
 from voice_assistant.config import settings
-from voice_assistant.providers.base import SpeechStarted, SttEvent, Transcript, UtteranceEnd
+from voice_assistant.providers.base import (
+    SpeechStarted,
+    SttClosed,
+    SttEvent,
+    Transcript,
+    UtteranceEnd,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -28,6 +34,10 @@ _SAMPLE_RATE = 16000
 _CHANNELS = 1
 _ENDPOINTING_MS = 300
 _UTTERANCE_END_MS = 1000
+
+# Bounded auto-reconnect on an unexpected mid-conversation socket drop.
+_MAX_RECONNECT_ATTEMPTS = 3
+_RECONNECT_DELAYS = [0.5, 1.0, 2.0]  # seconds, indexed by (attempt - 1)
 
 # TTS conventions (CLAUDE.md) — Aura REST, synthesized per sentence.
 _TTS_ENCODING = "linear16"
@@ -52,11 +62,18 @@ class DeepgramSTT:
         self._socket = None
         self._queue: asyncio.Queue[SttEvent] = asyncio.Queue()
         self._reader_task: asyncio.Task | None = None
+        self._closing = False
+        self._reconnect_delays = _RECONNECT_DELAYS
 
     async def start(self) -> None:
-        """Open the Deepgram streaming socket and start the background
-        reader task that translates raw SDK messages into normalized
-        events on ``self._queue``."""
+        """Open the Deepgram streaming socket and start the background reader
+        task that translates raw SDK messages into normalized events and
+        transparently reconnects on an unexpected drop."""
+        self._closing = False
+        await self._open_socket()
+        self._reader_task = asyncio.create_task(self._read_loop())
+
+    async def _open_socket(self) -> None:
         self._client = AsyncDeepgramClient(api_key=self._api_key)
         self._connect_cm = self._client.listen.v1.connect(
             model=self._model,
@@ -71,22 +88,50 @@ class DeepgramSTT:
             punctuate=True,
         )
         self._socket = await self._connect_cm.__aenter__()
-        self._reader_task = asyncio.create_task(self._read_loop())
+
+    async def _close_socket(self) -> None:
+        cm = self._connect_cm
+        self._connect_cm = None
+        self._socket = None
+        if cm is not None:
+            with contextlib.suppress(Exception):  # noqa: BLE001 - best-effort teardown
+                await cm.__aexit__(None, None, None)
 
     async def _read_loop(self) -> None:
-        """Consume raw Deepgram messages and push normalized events onto
-        the queue. Never let a vendor-side error/disconnect propagate —
-        just stop producing events, same as agent.py's guard around the
-        LLM stream."""
-        try:
-            async for msg in self._socket:
-                event = self._normalize(msg)
-                if event is not None:
-                    await self._queue.put(event)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - vendor socket errors must not crash the caller
-            _logger.warning("Deepgram STT socket reader stopped", exc_info=True)
+        """Consume raw Deepgram messages onto the queue, transparently
+        reconnecting on an unexpected socket end. On intentional stop
+        (``finish``/``aclose`` set ``_closing``) it exits cleanly; when bounded
+        reconnect is exhausted it enqueues a terminal ``SttClosed``."""
+        attempt = 0
+        while not self._closing:
+            try:
+                async for msg in self._socket:
+                    attempt = 0  # any received message resets the budget
+                    event = self._normalize(msg)
+                    if event is not None:
+                        await self._queue.put(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - vendor socket errors must not crash the caller
+                _logger.warning("Deepgram STT socket reader errored", exc_info=True)
+
+            if self._closing:
+                break
+            if attempt >= _MAX_RECONNECT_ATTEMPTS:
+                _logger.error("Deepgram STT reconnect exhausted")
+                await self._queue.put(SttClosed())
+                break
+            delay = self._reconnect_delays[min(attempt, len(self._reconnect_delays) - 1)]
+            attempt += 1
+            _logger.warning("Deepgram STT dropped; reconnecting (attempt %d)", attempt)
+            await asyncio.sleep(delay)
+            await self._close_socket()
+            try:
+                await self._open_socket()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - reopen failed; loop retries or exhausts
+                _logger.warning("Deepgram STT reconnect open failed", exc_info=True)
 
     @staticmethod
     def _normalize(msg: object) -> SttEvent | None:
@@ -115,6 +160,9 @@ class DeepgramSTT:
             _logger.warning("Failed to send audio to Deepgram", exc_info=True)
 
     async def finish(self) -> None:
+        # Mark intentional stop first so the reader treats the coming socket
+        # end as expected (no reconnect), not as a drop.
+        self._closing = True
         if self._socket is None:
             return
         with contextlib.suppress(Exception):  # noqa: BLE001 - best-effort close signal
@@ -129,16 +177,13 @@ class DeepgramSTT:
             yield event
 
     async def aclose(self) -> None:
+        self._closing = True
         if self._reader_task is not None:
             self._reader_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):  # noqa: BLE001
                 await self._reader_task
             self._reader_task = None
-        if self._connect_cm is not None:
-            with contextlib.suppress(Exception):  # noqa: BLE001 - best-effort teardown
-                await self._connect_cm.__aexit__(None, None, None)
-            self._connect_cm = None
-        self._socket = None
+        await self._close_socket()
 
 
 class DeepgramTTS:
