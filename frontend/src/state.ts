@@ -51,11 +51,18 @@ export type LocalAction =
   | { type: 'user_submit'; text: string }
   | { type: 'connected' }
   | { type: 'disconnected' }
+  | { type: 'reset' }
 
 export type Action = ServerEvent | LocalAction
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
+    case 'reset': {
+      // Starting a fresh session (the "New session" button): drop all
+      // transcript/tool/notification state and return to the clean slate.
+      return initialState
+    }
+
     case 'user_submit': {
       return {
         ...state,

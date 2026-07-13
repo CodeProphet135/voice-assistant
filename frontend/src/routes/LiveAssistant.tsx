@@ -1,41 +1,23 @@
-import { useEffect, useReducer, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AudioPlayer } from '../audio/player'
 import { MicButton } from '../components/MicButton'
 import { StatusBadge } from '../components/StatusBadge'
 import { Transcript } from '../components/Transcript'
-import { initialState, reducer } from '../state'
-import { VoiceAssistantClient, type ConnectionStatus } from '../ws'
+import { useLiveSession } from '../LiveSessionContext'
 
 export function LiveAssistant() {
-  const [state, dispatch] = useReducer(reducer, initialState)
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
+  const { state, dispatch, client, connectionStatus, newSession } = useLiveSession()
   const [inputText, setInputText] = useState('')
-  const [client, setClient] = useState<VoiceAssistantClient | null>(null)
 
+  // The socket outlives this route now, so leaving Live must stop microphone
+  // capture on the backend (without disconnecting) — otherwise it would keep
+  // listening in the background while the user is on another page. `stop` is a
+  // no-op server-side when no capture is active, so this is always safe.
   useEffect(() => {
-    const player = new AudioPlayer()
-
-    const client = new VoiceAssistantClient({
-      onEvent: (event) => {
-        if (event.type === 'tts_cancel') player.flush()
-        dispatch(event)
-      },
-      onStatusChange: (status) => {
-        setConnectionStatus(status)
-        dispatch({ type: status === 'open' ? 'connected' : 'disconnected' })
-      },
-      onAudio: (audio) => player.enqueue(audio),
-    })
-    setClient(client)
-    client.connect()
-
     return () => {
-      client.disconnect()
-      setClient(null)
-      void player.close()
+      client?.send({ type: 'stop' })
     }
-  }, [])
+  }, [client])
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -55,6 +37,9 @@ export function LiveAssistant() {
       <header className="app-header">
         <h1>Voice Assistant</h1>
         <StatusBadge connectionStatus={connectionStatus} pipelineState={state.status} />
+        <button type="button" className="nav-link" onClick={newSession}>
+          New session
+        </button>
         <Link className="nav-link" to="/sessions">Sessions</Link>
       </header>
 

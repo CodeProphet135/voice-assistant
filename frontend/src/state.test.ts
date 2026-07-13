@@ -50,4 +50,12 @@ describe('reducer', () => {
     reducer(initialState, { type: 'ready', session_id: 's1' } as never)
     expect(initialState).toEqual(before)
   })
+
+  it('reset clears a populated state back to initialState', () => {
+    const populated = run(SCRIPT)
+    // sanity: the script really did populate messages, so the reset is meaningful
+    expect(populated.messages.length).toBeGreaterThan(0)
+    const afterReset = reducer(populated, { type: 'reset' })
+    expect(afterReset).toEqual(initialState)
+  })
 })
