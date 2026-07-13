@@ -170,12 +170,12 @@ Prefer to run each step yourself (or are debugging one stage):
 
 ```bash
 cp .env.example .env   # fill in OPENAI_API_KEY and DEEPGRAM_API_KEY; this is the
-                        # only .env the app reads (backend resolves it by
-                        # absolute path regardless of cwd) — don't add another
-make up                  # start Postgres + Jaeger via docker compose
+                       # only .env the app reads (backend resolves it by
+                       # absolute path regardless of cwd) — don't add another
+make up                # start Postgres + Jaeger via docker compose
 make migrate
-make dev-backend         # FastAPI on :8000
-make dev-frontend        # Vite on :5173
+make dev-backend       # FastAPI on :8000
+make dev-frontend      # Vite on :5173
 ```
 
 ### Try the Replay
