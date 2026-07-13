@@ -372,24 +372,26 @@ class Session:
             await asyncio.sleep(seconds)
             await self.emit(TimerFiredEvent(timer_id=timer_id, label=label or ""))
             phrase = f"Your {label} timer is done." if label else "Your timer is done."
-            self._new_turn_id()
             async with self._turn_lock:
-                with _tracer.start_as_current_span("turn"):
-                    await self.emit(StateEvent(state="speaking"))
-                    await self.emit(TtsStartEvent(sentence_index=0, text=phrase))
-                    with _tracer.start_as_current_span("tts.synthesize") as span:
-                        span.set_attribute("sentence_index", 0)
-                        async for chunk in self.tts.synthesize(phrase):
-                            await self.ws.send_bytes(chunk)
-                    await self.emit(TtsEndEvent())
-                    await self.emit(
-                        StateEvent(state="listening" if self.stt is not None else "idle")
-                    )
+                self._new_turn_id()
+                try:
+                    with _tracer.start_as_current_span("turn"):
+                        await self.emit(StateEvent(state="speaking"))
+                        await self.emit(TtsStartEvent(sentence_index=0, text=phrase))
+                        with _tracer.start_as_current_span("tts.synthesize") as span:
+                            span.set_attribute("sentence_index", 0)
+                            async for chunk in self.tts.synthesize(phrase):
+                                await self.ws.send_bytes(chunk)
+                        await self.emit(TtsEndEvent())
+                        await self.emit(
+                            StateEvent(state="listening" if self.stt is not None else "idle")
+                        )
+                finally:
+                    self._current_turn_id = None
         except asyncio.CancelledError:
             raise
         finally:
             self._timer_tasks.pop(timer_id, None)
-            self._current_turn_id = None
 
     async def _consume_stt(self) -> None:
         """Drain normalized STT events, surfacing partial/final transcripts
