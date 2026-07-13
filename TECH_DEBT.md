@@ -22,6 +22,8 @@ history. Nothing here blocks running the app; fix opportunistically.
 - **Text-input path isn't under `_turn_lock`.** Only the STT-commit path is
   serialized; typing and speaking at the same instant could race
   `input_items`. Low-probability, not yet hit in practice.
+- **start.sh** prints the green "ready" URLs after a blind `sleep 2`, even if backend/frontend crashed immediately (bad import, port already taken) — the user sees "ready" for a dead server. Fix by capturing each job's PID and checking it's still alive before printing ready
+-  **Minor issues with start.sh**: (1) `read` under set -e aborts ungracefully on closed stdin/non-interactive invocation, (2) sed key substitution isn't metacharacter-safe for keys containing |, &, \, (3) color codes print raw escape sequences when output is redirected to a file.
 
 ## Robustness
 - **`Session.__init__` builds the OpenAI client eagerly**, so constructing a
