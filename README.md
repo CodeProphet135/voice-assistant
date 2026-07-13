@@ -138,6 +138,37 @@ and [plan](docs/superpowers/plans/2026-07-12-phase-6-timeline-replay.md).
 ## Quickstart
 
 ```bash
+./start.sh
+```
+
+This bootstraps `.env` (prompting for your `OPENAI_API_KEY` and
+`DEEPGRAM_API_KEY` the first time — leave either blank and the app still
+starts, but conversations will fail with an auth error until you add it),
+starts Postgres + Jaeger, runs migrations, and launches the backend
+(`:8000`) and frontend (`:5173`) together with interleaved, prefixed logs.
+Ctrl+C stops the dev servers; Postgres/Jaeger keep running in the
+background (`make down` to stop them too).
+
+Then open http://localhost:5173 and talk (or type) to the assistant.
+
+### Try it without a dev setup
+
+No Python/Node toolchain, just Docker:
+
+```bash
+cp .env.example .env   # fill in OPENAI_API_KEY and DEEPGRAM_API_KEY
+docker compose --profile app up --build
+docker compose run --rm app alembic upgrade head   # first run only
+```
+
+This builds frontend+backend into one image and serves the whole app on
+`:8000`.
+
+### Manual / step-by-step
+
+Prefer to run each step yourself (or are debugging one stage):
+
+```bash
 cp .env.example .env   # fill in OPENAI_API_KEY and DEEPGRAM_API_KEY; this is the
                         # only .env the app reads (backend resolves it by
                         # absolute path regardless of cwd) — don't add another
@@ -146,39 +177,6 @@ make migrate
 make dev-backend         # FastAPI on :8000
 make dev-frontend        # Vite on :5173
 ```
-
-Then open http://localhost:5173 and talk (or type) to the assistant.
-
-### Try the Replay
-
-The Timeline and Replay are views over *recorded* conversations, so there's one
-extra step beyond starting the app: put a conversation on record.
-
-1. **Have a conversation** on the Live page (`/`) — every event is persisted to
-   Postgres as it streams. (`make up` + `make migrate` are what make this
-   work: without a reachable DB the recorder self-disables, the live call is
-   unaffected, but nothing is saved to replay.)
-2. **Open the Sessions view** — click **Sessions** in the nav (or go to
-   `/sessions`), pick a session, and `/sessions/:id` renders the **Timeline**,
-   **Replay** (play/pause · 1×/2×/4× · scrubber), and **Event Inspector**.
-
-A session shows up the moment it starts and is replayable *while it's still
-live* — events are persisted as they stream, so you don't have to end the call
-first. Closing or reloading the tab just adds the finishing touches: the
-session's title (its first utterance) and its end time are written on teardown,
-so an in-progress session simply lists untitled until then.
-
-### See the traces
-
-`make up` starts Jaeger alongside Postgres. Point the app at it by setting
-`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` in `.env` and restarting
-the backend.
-
-Each turn then emits a `turn` span with nested `llm.request`, `tool.execute`,
-and `tts.synthesize` spans that surface in the Jaeger UI
-(http://localhost:16686) as the conversation runs — no need to end the session.
-Leave the endpoint empty to skip exporting and just print spans to the backend
-console instead.
 
 ## Testing
 
