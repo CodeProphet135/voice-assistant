@@ -63,6 +63,7 @@ info "Running database migrations..."
 
 # --- Run backend + frontend ---
 cleanup() {
+  trap - EXIT INT TERM
   info "Stopping dev servers..."
   jobs -p | xargs -r kill 2>/dev/null
   warn "Postgres and Jaeger are still running in the background. Run 'make down' to stop them."
