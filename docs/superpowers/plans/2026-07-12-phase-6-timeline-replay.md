@@ -596,7 +596,7 @@ and after the TTS/timer state is set up, add:
 
 7. At the end of `_run_turn`'s success path, right after the `StateEvent(state="listening"/"idle")` emit, add `self._current_turn_id = None`. In `_barge_in`, after the `StateEvent(state="listening")` emit, add `self._current_turn_id = None`.
 
-8. In `_fire_timer`, call `self._new_turn_id()` immediately before `async with self._turn_lock:`, and add `self._current_turn_id = None` in the `finally` (alongside the existing `self._timer_tasks.pop`).
+8. In `_fire_timer`, mutate `self._current_turn_id` ONLY while holding `self._turn_lock`: make `self._new_turn_id()` the first line inside `async with self._turn_lock:`, and clear `self._current_turn_id = None` in an inner `finally` wrapping the turn body (still inside the lock). Keep `emit(TimerFiredEvent(...))` before the lock (immediate UI notification) and `self._timer_tasks.pop` in the outer `finally`. (Corrected during review — mutating the shared field outside the lock cross-contaminates recorded `turn_id`s when a timer fires during an active turn.)
 
 9. In `_consume_stt`, replace the `SpeechStarted` branch body (currently `pass`) with:
 
