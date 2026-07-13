@@ -1,0 +1,42 @@
+# Tech Debt
+
+Known gaps and non-blocking issues, extracted from the project's session
+history. Nothing here blocks running the app; fix opportunistically.
+
+## Features
+- **`web_search` built-in tool isn't wired up.** Deferred since Phase 4 —
+  OpenAI's built-in web_search tool was never added to the tool registry.
+
+## Correctness
+- **Replaying a text-input turn shows no "You" bubble.**
+  `Session._handle_text_input` runs the turn but never `emit()`s a
+  user-message event, unlike voice turns (which emit `stt_final`). A fix
+  would emit a recorded user-utterance event shaped like `stt_final` so the
+  existing reducer picks it up — no new event type needed.
+- **Echo-detection buffer (`_spoken_recent`) never clears.** In a long
+  conversation, a genuine short user reply that closely matches something
+  the assistant said in roughly its last 20 sentences can be misclassified
+  as self-barge-in echo and silently dropped instead of committed.
+- **Minor lock-acquisition race in `_commit_stt_turn`.** On a same-tick
+  `stop`, state can settle to `idle` instead of `listening`.
+- **Text-input path isn't under `_turn_lock`.** Only the STT-commit path is
+  serialized; typing and speaking at the same instant could race
+  `input_items`. Low-probability, not yet hit in practice.
+
+## Robustness
+- **`Session.__init__` builds the OpenAI client eagerly**, so constructing a
+  bare `Session()` with no `OPENAI_API_KEY` raises immediately instead of
+  failing lazily on first use (or with a clearer error).
+
+## Unused / half-plumbed
+- **`StartEvent.sample_rate` is accepted but ignored** — `DeepgramSTT`
+  hardcodes 16kHz regardless of what the client sends.
+
+## Test coverage
+- **No automated browser/mic end-to-end test.** Every phase's mic-capture
+  and speaker-playback path (including barge-in) was verified manually by a
+  human at a real browser; there's no headless coverage for that surface.
+
+## Docs / assets
+- **README is missing the Jaeger waterfall screenshot and demo GIF** —
+  needs a human at a real browser with a live session to capture.

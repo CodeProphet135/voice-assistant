@@ -1,4 +1,4 @@
-.PHONY: dev-backend dev-frontend db-up db-down migrate test lint fmt
+.PHONY: dev-backend dev-frontend up down migrate test lint fmt
 
 dev-backend:
 	cd backend && uv run uvicorn voice_assistant.main:app --reload --port 8000
@@ -6,10 +6,10 @@ dev-backend:
 dev-frontend:
 	cd frontend && npm run dev
 
-db-up:
-	docker compose up -d postgres
+up:
+	docker compose up -d
 
-db-down:
+down:
 	docker compose down
 
 migrate:

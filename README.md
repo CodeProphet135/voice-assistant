@@ -1,38 +1,64 @@
 # Voice Assistant
 
 A real-time, tool-using voice assistant. Talk to it in the browser; it streams your
-speech to text, reasons with an LLM (calling tools like weather lookups, web search,
-timers, and notes along the way), and speaks its answer back — all over a single
-WebSocket, sentence by sentence, with sub-2-second voice-to-voice latency.
+speech to text, reasons with an LLM (calling tools like weather lookups, timers, and
+notes along the way), and speaks its answer back — all over a single WebSocket,
+sentence by sentence, with sub-2-second voice-to-voice latency.
+
+Every session is captured as an append-only event log, so any conversation can be
+[replayed](#timeline--replay) turn-by-turn against a latency timeline and a raw
+event inspector — the live UI and the replay share the exact same reducer.
 
 > 🚧 Under active development. See [Roadmap](#roadmap) for build status.
 
-![CI](https://github.com/OWNER/voice-assistant/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/codeprophet135/voice-assistant/actions/workflows/ci.yml/badge.svg)
 
 <!-- ![demo](docs/demo.gif) -->
 
 ## Architecture
 
+The **live path** (solid, left-to-right) carries voice; the **replay path**
+(reading back from the event log) reuses the *exact same reducer* as the live
+UI — that reuse is the payoff of routing every server→client event through one
+`emit()` seam.
+
 ```mermaid
 flowchart LR
-  subgraph Browser
+  subgraph Browser["Browser · single-page app"]
+    direction TB
     Mic["🎤 Mic · AudioWorklet<br/>16kHz Int16 PCM"]
     Spk["🔊 Speaker · gapless<br/>PCM player"]
+    LiveUI["Live UI<br/>reducer · state.ts"]
+    ReplayUI["Timeline · Replay · Inspector<br/><i>same</i> reducer · state.ts"]
   end
+
   Mic -- "binary PCM" --> WS
-  WS -- "binary PCM + JSON events" --> Spk
+  WS -- "binary PCM" --> Spk
+  WS -- "JSON events" --> LiveUI
+  ReplayUI -- "GET /api/sessions/:id/events" --> REST
+
   subgraph Backend["FastAPI session orchestrator"]
-    WS["/WebSocket /ws/"]
-    Agent["OpenAI agent loop<br/>Responses API · streaming tools"]
+    WS["WebSocket /ws"]
+    STT["Deepgram STT<br/>streaming · endpointing"]
+    Agent["Custom agent loop<br/>OpenAI Responses API · streaming tools"]
     Chunk["sentence chunker"]
-    WS --> STT
-    STT["Deepgram STT<br/>streaming · endpointing"] --> Agent
-    Agent --> Chunk --> TTS["Deepgram TTS<br/>Aura · per sentence"]
-    TTS --> WS
-    Agent <--> Tools["tool registry<br/>weather · timer · notes"]
+    TTS["Deepgram TTS<br/>Aura · per sentence"]
+    Emit["emit() · single fan-out seam"]
+    Rec["EventRecorder<br/>async-batched · best-effort"]
+    REST["REST · /api/sessions"]
+    Tools["tool registry<br/>weather · timer · notes"]
+
+    WS --> STT --> Agent
+    Agent --> Chunk --> TTS --> WS
+    Agent <--> Tools
+    Agent --> Emit --> WS
+    Emit --> Rec
   end
+
+  Rec -- "append-only event log" --> PG[("Postgres<br/>sessions · events · notes")]
+  REST -- "read log" --> PG
+  Tools -- "notes" --> PG
   Agent -. "spans" .-> OTel[("OpenTelemetry<br/>→ Jaeger")]
-  Tools --> PG[("Postgres<br/>notes · session/event log")]
 ```
 
 ### Latency budget (voice-to-voice)
@@ -47,8 +73,7 @@ Target: **under ~2 s** from end-of-speech to first audio out.
 | TTS first audio | sentence → first PCM frame | ~0.3 s | Deepgram Aura REST, per sentence |
 | **Total** | speech end → first audio | **~1.6 s** | within the sub-2 s target |
 
-Numbers are from live end-to-end runs recorded in `HANDOFF.md`; TTS/first-audio
-is a representative single-sentence figure. Re-measure with `scripts/ws_client.py`
+TTS/first-audio is a representative single-sentence figure. Re-measure with `scripts/ws_client.py`
 (timestamps every event).
 
 ## Design Decisions
@@ -116,11 +141,44 @@ and [plan](docs/superpowers/plans/2026-07-12-phase-6-timeline-replay.md).
 cp .env.example .env   # fill in OPENAI_API_KEY and DEEPGRAM_API_KEY; this is the
                         # only .env the app reads (backend resolves it by
                         # absolute path regardless of cwd) — don't add another
-make db-up              # start Postgres (and Jaeger, with --profile observability)
+make up                  # start Postgres + Jaeger via docker compose
 make migrate
 make dev-backend         # FastAPI on :8000
 make dev-frontend        # Vite on :5173
 ```
+
+Then open http://localhost:5173 and talk (or type) to the assistant.
+
+### Try the Replay
+
+The Timeline and Replay are views over *recorded* conversations, so there's one
+extra step beyond starting the app: put a conversation on record.
+
+1. **Have a conversation** on the Live page (`/`) — every event is persisted to
+   Postgres as it streams. (`make up` + `make migrate` are what make this
+   work: without a reachable DB the recorder self-disables, the live call is
+   unaffected, but nothing is saved to replay.)
+2. **Open the Sessions view** — click **Sessions** in the nav (or go to
+   `/sessions`), pick a session, and `/sessions/:id` renders the **Timeline**,
+   **Replay** (play/pause · 1×/2×/4× · scrubber), and **Event Inspector**.
+
+A session shows up the moment it starts and is replayable *while it's still
+live* — events are persisted as they stream, so you don't have to end the call
+first. Closing or reloading the tab just adds the finishing touches: the
+session's title (its first utterance) and its end time are written on teardown,
+so an in-progress session simply lists untitled until then.
+
+### See the traces
+
+`make up` starts Jaeger alongside Postgres. Point the app at it by setting
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` in `.env` and restarting
+the backend.
+
+Each turn then emits a `turn` span with nested `llm.request`, `tool.execute`,
+and `tts.synthesize` spans that surface in the Jaeger UI
+(http://localhost:16686) as the conversation runs — no need to end the session.
+Leave the endpoint empty to skip exporting and just print spans to the backend
+console instead.
 
 ## Testing
 

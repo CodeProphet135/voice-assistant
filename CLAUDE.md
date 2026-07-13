@@ -4,9 +4,7 @@ Real-time, tool-using voice assistant: browser mic → WebSocket → FastAPI bac
 (Deepgram STT → OpenAI agent loop → Deepgram TTS) → browser speaker. Portfolio
 project — solo build, phased, no k8s/queues/auth-system over-engineering.
 
-**Read [HANDOFF.md](HANDOFF.md) first** — it's the living status doc that says
-exactly what's done, what's next, and what gotchas the last session hit. This
-file only holds durable conventions that shouldn't need updating every phase.
+See [TECH_DEBT.md](TECH_DEBT.md) for known gaps and non-blocking issues.
 
 ## Stack
 
@@ -59,7 +57,7 @@ file only holds durable conventions that shouldn't need updating every phase.
 ```bash
 make dev-backend    # uvicorn on :8000 (uv run)
 make dev-frontend   # vite on :5173
-make db-up          # postgres via docker compose (add --profile observability for Jaeger)
+make up             # postgres + jaeger via docker compose (no --profile flags — profiles in docker-compose.yml gate what's opt-in, e.g. the containerized `app` service)
 make migrate        # alembic upgrade head
 make test           # backend pytest + frontend typecheck
 make lint           # ruff + tsc
