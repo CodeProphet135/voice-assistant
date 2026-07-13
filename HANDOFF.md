@@ -5,6 +5,62 @@ truth for where the last session left off. Update it before you stop working,
 so the next session (or the next you) doesn't have to reconstruct context from
 `git log`.
 
+## Status: Phase 5 done ✅ (polish — reliability + docs + verified container)
+
+Phases 0–5 are on `main`. **Phase 5 (Polish) is built, tested, and committed on
+`main`** in six focused commits (plus the spec + plan docs). Backend is **100
+passed** when Postgres is up (97 + migration smoke + 2 notes) / **97 passed, 3
+skipped** without it; `ruff` clean. Frontend: **3 vitest + typecheck + build +
+oxlint** all clean.
+
+Design + plan: `docs/superpowers/specs/2026-07-12-phase-5-polish-design.md` and
+`docs/superpowers/plans/2026-07-12-phase-5-polish.md`.
+
+### Phase 5 — what was built (on `main`)
+- **History truncation guard** (`agent/history.py`): pure
+  `truncate_history(items, max_items)` trims oldest *whole turns* once
+  `input_items` exceeds `MAX_INPUT_ITEMS = 40`, cutting only on `user`-message
+  boundaries so a `function_call`/`function_call_output` pair is never orphaned
+  (Responses API 400). System prompt rides in `instructions=`, never touched.
+  `session.py`'s `_run_turn` calls it at the top of each turn. 4 unit tests.
+- **Deepgram STT bounded reconnect** (`providers/deepgram.py`): `start()` split
+  into `_open_socket`/`_close_socket`; `_read_loop` now reconnects on an
+  unexpected socket end (`_MAX_RECONNECT_ATTEMPTS = 3`, backoff `0.5/1/2s`; a
+  received message resets the budget). `finish()`/`aclose()` set `_closing` so an
+  intentional stop never reconnects. On exhaustion it enqueues a new terminal
+  `SttClosed` event (`providers/base.py`), which `session._consume_stt` surfaces
+  as an `ErrorEvent` + settles to `idle` and detaches the provider (without
+  calling `_stop_stt`, which would cancel its own task). 4 tests (3 provider,
+  1 session).
+- **README** (`README.md`): Mermaid architecture diagram (replaces the ASCII
+  block), a voice-to-voice latency budget table, and a filled-in Design
+  Decisions section. **No screenshot/GIF** — deferred to Phase 6 (see below).
+- **Test suite**: `tests/test_migrations.py` (alembic `downgrade base` →
+  `upgrade head`, asserts the `notes` table; skips w/o Postgres — **verified
+  PASSING live** this session). Frontend `src/state.test.ts` (vitest): reducer
+  determinism + purity (the invariant Phase 6 Replay relies on). Added `vitest` +
+  `jsdom`, a `test` npm script, and wired `npm run test` into `make test`.
+- **Docker image + Jaeger opt-in**: the uncommitted "Jaeger always-on" edits were
+  reverted (they were already clean in the working tree) — Jaeger stays opt-in
+  via `docker compose --profile observability up -d jaeger`; `.env.example` now
+  documents enabling `OTEL_EXPORTER_OTLP_ENDPOINT`. **Image build verified**:
+  `docker compose --profile app build app` succeeds → `voice-assistant-app:latest`
+  (582 MB); cold start serves `/healthz` `{"status":"ok"}` and the built frontend
+  at `/` from the in-image static mount. Verified live this session, then torn down.
+
+### Phase 5 — deferred to Phase 6 (user decision)
+- **Jaeger waterfall screenshot + demo GIF** for the README — both need a live
+  browser+mic demo run that can't happen headlessly. Capture them during Phase 6
+  (which builds the Timeline/Replay UI and will have real recorded sessions
+  anyway) and drop them into the README then.
+- **`web_search`** built-in tool — still deferred (unchanged from Phase 4).
+
+### Phase 5 — remaining (human / next session)
+- Nothing blocking. Optional: view the Mermaid diagram rendered on GitHub after
+  the next push (GitHub renders `mermaid` fences natively; syntax is standard).
+
+---
+
 ## Status: Phase 4 done ✅ (tools — weather, timer, notes — verified live end-to-end)
 
 Phases 0–3 are merged on `main` and Phase 3 is tagged `v0.1.0`. **Phase 4
@@ -493,11 +549,13 @@ Don't mark Phase 1 done without all of:
    (`8a74469`); human mic barge-in check passed (2026-07-12). COMPLETE.
 5. ✅ Tools (weather, timers, notes) — built + tested + verified live on `main`;
    **web_search deferred**. Only the human browser demo remains. COMPLETE.
-6. ⬜ Polish (full test suite, README diagram + latency table, Docker image,
-   error-handling passes) — **you are here next**. Consider folding the
-   deferred `web_search` built-in tool in here or into its own slice.
-7. ⬜ Event Timeline + Replay (event sourcing, Temporal-style replay UI) — tag
-   `v1.0.0`
+6. ✅ Polish (history truncation, STT reconnect, README diagram + latency table,
+   migration + reducer tests, verified Docker image) — built + tested + verified
+   live on `main`. COMPLETE. Screenshot/GIF + `web_search` deferred to Phase 6.
+7. ⬜ Event Timeline + Replay (event sourcing, Temporal-style replay UI) —
+   **you are here next**. Also owns the deferred Jaeger screenshot + demo GIF
+   (needs live recorded sessions) and the `web_search` built-in tool. Tag
+   `v1.0.0`.
 
 The full per-phase design rationale (audio pipeline choices, WS protocol
 table, barge-in state machine, OTel span layout, event-sourcing details) was

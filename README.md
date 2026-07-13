@@ -107,7 +107,7 @@ make lint       # ruff + tsc
 - [x] Phase 2 — Voice in (STT)
 - [x] Phase 3 — Voice out + barge-in
 - [x] Phase 4 — Tools
-- [ ] Phase 5 — Polish
+- [x] Phase 5 — Polish
 - [ ] Phase 6 — Event Timeline + Replay
 
 ## License
