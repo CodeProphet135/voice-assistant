@@ -81,6 +81,35 @@ is a representative single-sentence figure. Re-measure with `scripts/ws_client.p
 - **Reliability** — Deepgram STT auto-reconnects (bounded) on a mid-conversation
   drop; the WebSocket loop tears down STT/TTS/timers on any disconnect.
 
+## Timeline & Replay
+
+Every conversation is an append-only event log. The same `emit()` seam that
+streams events to the browser also hands each one to an async `EventRecorder`
+that persists it to Postgres (`sessions` + `events` tables) with its
+`turn_id` and OTel `trace_id`/`span_id`. Recording is best-effort — if the DB
+is unreachable the recorder self-disables and the live conversation is
+unaffected.
+
+A routed UI reads that log back over `GET /api/sessions` and
+`GET /api/sessions/:id/events`. At `/sessions/:id` three panels render over
+the recorded events:
+
+- **Timeline** — a per-turn Gantt chart on a shared absolute time axis:
+  listening → thinking → speaking phases, with `tool` sub-spans (matched by
+  `call_id`) and speaking capped at barge-in cancels.
+- **Replay** — play/pause, 1×/2×/4×, and a scrubber that reproduce the
+  conversation at any cursor. Replay works by folding the recorded event
+  payloads through the **exact same pure reducer that drives the live UI**
+  (`state.ts`), reused verbatim — that reducer-reuse is the whole reason the
+  conversation state is event-sourced.
+- **Event Inspector** — the raw event list with a JSON payload pane, including
+  the `llm_request` snapshot (the exact `input` list sent to the model each
+  agent-loop iteration).
+
+Design + implementation notes:
+[design spec](docs/superpowers/specs/2026-07-12-phase-6-timeline-replay-design.md)
+and [plan](docs/superpowers/plans/2026-07-12-phase-6-timeline-replay.md).
+
 ## Quickstart
 
 ```bash
@@ -108,7 +137,7 @@ make lint       # ruff + tsc
 - [x] Phase 3 — Voice out + barge-in
 - [x] Phase 4 — Tools
 - [x] Phase 5 — Polish
-- [ ] Phase 6 — Event Timeline + Replay
+- [x] Phase 6 — Event Timeline + Replay
 
 ## License
 

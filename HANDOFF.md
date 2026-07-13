@@ -5,6 +5,90 @@ truth for where the last session left off. Update it before you stop working,
 so the next session (or the next you) doesn't have to reconstruct context from
 `git log`.
 
+## Status: Phase 6 done ✅ (Event Timeline + Replay)
+
+Phase 6 is built, tested, and **verified live end-to-end** on branch
+`phase-6-timeline-replay` (off `main` @ `3970254`), across 7 focused tasks
+(9 commits + spec/plan/ledger). Backend **108 passed** with Postgres up
+(`ruff` clean); frontend **11 vitest** (state 3 + timeline 5 + replay 3) +
+typecheck + build + oxlint all clean.
+
+Design + plan:
+`docs/superpowers/specs/2026-07-12-phase-6-timeline-replay-design.md` and
+`docs/superpowers/plans/2026-07-12-phase-6-timeline-replay.md`. Per-task
+ledger + deferred minors: `.superpowers/sdd/progress.md`.
+
+### Phase 6 — what was built (branch `phase-6-timeline-replay`)
+- **`sessions` + `events` tables + `0002` migration** (`models.py`,
+  `alembic/versions/0002_sessions_events.py`): `Session(id, started_at,
+  ended_at, title)` and append-only `Event(id, session_id, seq, ts, turn_id,
+  trace_id, span_id, type, payload::JSONB)` with `UNIQUE(session_id, seq)` +
+  an index on `session_id`. Hand-written migration in the `0001` style.
+- **`EventRecorder`** (`events.py`): async-batched, append-only persistence
+  hung off `session.emit()` — the same seam that sends to the WS now also
+  hands each event to the recorder. Carries `turn_id` + `trace_id`/`span_id`
+  so the log ties back to OTel. **Best-effort**: it self-disables when
+  Postgres is unreachable, so a DB outage never breaks the live conversation
+  (and the DB-less test suite stays green). `note_title(text)` sets the
+  session's first-utterance title; `start()`/`stop()` bookend the session row.
+- **Two new recorded events** flowing through `emit()`: `speech_started`
+  (STT onset, for the Timeline's listening phase) and `llm_request` (per
+  agent-loop iteration, carrying the exact `input` snapshot + `model` +
+  `iteration` — this is what the Inspector shows).
+- **REST endpoints** (`api.py`, prefix `/api`): `GET /api/sessions`
+  (newest-first summaries) and `GET /api/sessions/{id}/events` (full ordered
+  event log). Pydantic read-models serialized over real HTTP in tests.
+- **Routed frontend** (`react-router-dom`): `/` live assistant (extracted
+  verbatim into `routes/LiveAssistant.tsx`), `/sessions` list, `/sessions/:id`
+  detail. Detail mounts three panels over the fetched event log:
+  - **Timeline** (`timeline.ts` pure `computeTurns` + `components/Timeline.tsx`):
+    per-turn Gantt rows on a shared absolute ms axis —
+    listening/thinking/speaking segments + `tool` sub-spans matched by
+    `call_id`, speaking capped at `tts_cancel` for barge-in turns.
+  - **Replay** (`replay.ts` pure `foldTo` + `components/Replay.tsx`): folds the
+    recorded payloads through the **live `state.ts` reducer, reused verbatim**
+    — play/pause, 1×/2×/4×, scrubber. This reducer-reuse is the whole point of
+    event sourcing: one pure reducer drives both the live UI and replay.
+  - **Event Inspector** (`components/EventInspector.tsx`): event list + JSON
+    payload pane; selecting event `i` shows replay state *after* `i` applied.
+
+### Phase 6 — verified live this session (real OpenAI + Deepgram + Postgres)
+- Full suites: backend **108 passed** (`alembic upgrade head` + event/api/
+  migration tests against live Postgres) + `ruff` clean; frontend **11 vitest**
+  + typecheck + build + oxlint clean.
+- **Live record → replay**: drove a real text turn ("What's the weather in
+  Paris right now?") over `/ws` (real agent loop → `get_weather` tool →
+  Deepgram TTS). **35 events persisted**; `GET /api/sessions/{id}/events`
+  returned them with the `llm_request` `input` snapshot, `tool_call`/
+  `tool_result` matched by `call_id`, one `turn_id`, and the first-utterance
+  **title + `ended_at`** set. In the browser at `/sessions/:id`: the Timeline
+  rendered the turn with a `tool 1468ms` sub-span, and scrubbing the Replay
+  cursor reproduced the assistant's reply ("Right now in Paris it's 35 degrees
+  Celsius and overcast…") + `get_weather ✓` tool activity by folding through
+  the live reducer.
+
+### Phase 6 — deferred (unchanged) + one caveat
+- **`web_search`** built-in tool — still deferred (unchanged since Phase 4).
+- **Jaeger waterfall screenshot + demo GIF** for the README — the headless
+  browser here renders a 0×0 viewport (pointer/keyboard events don't reach
+  React handlers, though `form_input`-style DOM events and read-only rendering
+  work), so a polished captured GIF still needs a human at a real browser.
+  Non-blocking; drop into the README when captured.
+- **Caveat — text-input turns record no user-side event.**
+  `session._handle_text_input` runs the turn but never `emit()`s a user
+  message (unlike voice turns, which emit `stt_final`). So replaying a *text*
+  turn shows the assistant reply but **no "You" bubble**. Pre-existing
+  text-path behavior, not Phase 6 replay code. If desired, a follow-up could
+  emit a recorded user-utterance event from `_handle_text_input` (needs a
+  protocol event the reducer already folds — `stt_final`-shaped).
+
+### Phase 6 — remaining (human)
+- Optional: capture the Jaeger/GIF assets in a real browser and add to README.
+- **Release tag `v1.0.0`** — gated on explicit user confirmation (Task 7
+  Step 6); not auto-tagged.
+
+---
+
 ## Status: Phase 5 done ✅ (polish — reliability + docs + verified container)
 
 Phases 0–5 are on `main`. **Phase 5 (Polish) is built, tested, and committed on
@@ -552,10 +636,12 @@ Don't mark Phase 1 done without all of:
 6. ✅ Polish (history truncation, STT reconnect, README diagram + latency table,
    migration + reducer tests, verified Docker image) — built + tested + verified
    live on `main`. COMPLETE. Screenshot/GIF + `web_search` deferred to Phase 6.
-7. ⬜ Event Timeline + Replay (event sourcing, Temporal-style replay UI) —
-   **you are here next**. Also owns the deferred Jaeger screenshot + demo GIF
-   (needs live recorded sessions) and the `web_search` built-in tool. Tag
-   `v1.0.0`.
+7. ✅ Event Timeline + Replay (event sourcing, Temporal-style replay UI) —
+   built + tested + verified live on `phase-6-timeline-replay`
+   (`sessions`/`events` tables, async `EventRecorder`, `speech_started` +
+   `llm_request` events, REST endpoints, routed Timeline/Replay/Inspector
+   over the live reducer). **web_search + Jaeger screenshot/GIF still
+   deferred.** Tag `v1.0.0` pending explicit user confirmation.
 
 The full per-phase design rationale (audio pipeline choices, WS protocol
 table, barge-in state machine, OTel span layout, event-sourcing details) was
