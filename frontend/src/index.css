@@ -345,3 +345,12 @@ main {
   opacity: 0.6;
   font-size: 0.85rem;
 }
+
+.timeline { display: flex; flex-direction: column; gap: 0.35rem; margin: 1rem 0; }
+.timeline-legend { display: flex; gap: 1rem; font-size: 0.8rem; margin-bottom: 0.3rem; }
+.timeline-row { display: flex; align-items: center; gap: 0.5rem; }
+.timeline-label { width: 5rem; font-size: 0.8rem; opacity: 0.8; }
+.timeline-track { position: relative; flex: 1; height: 20px; background: rgba(127,127,127,0.12); border-radius: 4px; }
+.timeline-seg { position: absolute; top: 0; height: 20px; border-radius: 3px; }
+.timeline-seg.is-tool { top: 5px; height: 10px; opacity: 0.9; }
+.timeline-cancel { position: absolute; top: 0; color: #a32d2d; font-weight: 500; transform: translateX(-50%); }

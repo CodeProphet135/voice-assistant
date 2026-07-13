@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { fetchEvents, type RecordedEvent } from '../api'
+import { Timeline } from '../components/Timeline'
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>()
@@ -20,7 +21,8 @@ export function SessionDetail() {
       </header>
       {error && <p className="error-banner">{error}</p>}
       <p className="muted">{events.length} events</p>
-      {/* Timeline (Task 5), Replay + Inspector (Task 6) mount here. */}
+      {events.length > 0 && <Timeline events={events} />}
+      {/* Replay + Inspector (Task 6) mount here. */}
     </main>
   )
 }
