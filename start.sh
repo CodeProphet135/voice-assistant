@@ -41,3 +41,22 @@ if [ ! -f .env ]; then
     warn "Left blank — the app will start, but every conversation turn will fail with an auth error until you add DEEPGRAM_API_KEY to .env and restart."
   fi
 fi
+
+# --- Infra ---
+info "Starting Postgres + Jaeger (docker compose up -d)..."
+docker compose up -d
+
+info "Waiting for Postgres to be healthy..."
+tries=0
+until docker compose exec -T postgres pg_isready -U va -d voice_assistant >/dev/null 2>&1; do
+  tries=$((tries + 1))
+  if [ "$tries" -ge 30 ]; then
+    fail "Postgres did not become ready after 30s. Check 'docker compose logs postgres'."
+  fi
+  sleep 1
+done
+ok "Postgres is ready."
+
+# --- Migrate ---
+info "Running database migrations..."
+(cd backend && uv run alembic upgrade head)
