@@ -13,6 +13,7 @@ from conftest import FakeTTSProvider, FakeWebSocket, make_text_turn
 from voice_assistant import db
 from voice_assistant.events import EventRecorder
 from voice_assistant.models import Event
+from voice_assistant.models import Session as SessionRow
 from voice_assistant.protocol import AssistantDeltaEvent, ReadyEvent
 from voice_assistant.session import Session
 
@@ -22,6 +23,41 @@ async def test_record_is_noop_when_disabled():
     # start() never called -> disabled -> record must not raise and must not seq.
     rec.record(ReadyEvent(session_id="x"), turn_id=None, trace_id=None, span_id=None)
     assert rec._seq == 0
+
+
+async def test_no_events_leaves_no_session_row(pg_db):
+    # A connection where nothing was ever recorded (idle page load, a reload
+    # without talking, StrictMode's dev double-connect) must not persist a
+    # "(untitled session)" row: the row is created lazily on the first event.
+    sid = uuid.uuid4()
+    rec = EventRecorder(sid)
+    await rec.start()
+    await rec.stop()
+
+    async with db.async_session_factory() as s:
+        row = (
+            await s.execute(sa.select(SessionRow).where(SessionRow.id == sid))
+        ).scalar_one_or_none()
+    assert row is None
+
+
+async def test_first_event_creates_row_and_stop_finalizes(pg_db):
+    # The complementary guarantee: once a real event is recorded, the row is
+    # created exactly once and stop() finalizes ended_at + title.
+    sid = uuid.uuid4()
+    rec = EventRecorder(sid)
+    await rec.start()
+    rec.record(ReadyEvent(session_id=sid.hex), turn_id=None, trace_id=None, span_id=None)
+    rec.note_title("hello there")
+    await rec.stop()
+
+    async with db.async_session_factory() as s:
+        row = (
+            await s.execute(sa.select(SessionRow).where(SessionRow.id == sid))
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.title == "hello there"
+    assert row.ended_at is not None
 
 
 async def test_records_events_in_seq_order(pg_db):

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from voice_assistant import db
 from voice_assistant.models import Event
@@ -46,14 +47,21 @@ class EventRecorder:
         self._task: asyncio.Task | None = None
         self._enabled = False
         self._title: str | None = None
+        # The sessions row is created lazily, on the first event actually
+        # written (see _write_batch). A connection that records nothing --
+        # an idle page load, a reload without talking, StrictMode's dev
+        # double-connect -- leaves no "(untitled session)" row behind.
+        self._session_created = False
 
     async def start(self) -> None:
+        # Probe reachability only; do NOT create the session row here (that is
+        # deferred to the first event). A DB failure self-disables recording so
+        # it never breaks the live conversation.
         try:
             async with db.async_session_factory() as s:
-                s.add(SessionRow(id=self._session_id))
-                await s.commit()
+                await s.execute(sa.text("SELECT 1"))
         except Exception:  # noqa: BLE001 - disable recording, never break the session
-            _logger.warning("EventRecorder disabled: could not create session row", exc_info=True)
+            _logger.warning("EventRecorder disabled: database unreachable", exc_info=True)
             self._enabled = False
             return
         self._enabled = True
@@ -94,6 +102,16 @@ class EventRecorder:
     async def _write_batch(self, batch: list[RecordedEvent]) -> None:
         try:
             async with db.async_session_factory() as s:
+                # Create the sessions row on first write so the events FK is
+                # satisfied. ON CONFLICT DO NOTHING keeps it idempotent if a
+                # prior batch already created it (the flag guards the common
+                # case; this guards a retried batch after a failed commit).
+                if not self._session_created:
+                    await s.execute(
+                        pg_insert(SessionRow)
+                        .values(id=self._session_id)
+                        .on_conflict_do_nothing(index_elements=["id"])
+                    )
                 s.add_all(
                     [
                         Event(
@@ -110,6 +128,10 @@ class EventRecorder:
                     ]
                 )
                 await s.commit()
+                # Only mark created after a successful commit -- a failed
+                # commit leaves the flag False so the next batch retries the
+                # row insert.
+                self._session_created = True
         except Exception:  # noqa: BLE001 - best effort; dropped events must not crash
             _logger.warning(
                 "EventRecorder batch write failed (%d events)", len(batch), exc_info=True
@@ -124,6 +146,11 @@ class EventRecorder:
                 await self._task
             except Exception:  # noqa: BLE001
                 _logger.warning("EventRecorder flush task errored on stop", exc_info=True)
+        # The flush loop above drains any queued events before returning, so
+        # _session_created is now accurate. If nothing was ever written there
+        # is no row to finalize -- leave no empty session behind.
+        if not self._session_created:
+            return
         try:
             async with db.async_session_factory() as s:
                 await s.execute(
