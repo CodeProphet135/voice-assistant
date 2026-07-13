@@ -36,7 +36,9 @@ FastAPI session orchestrator
 ## Quickstart
 
 ```bash
-cp .env.example .env   # fill in OPENAI_API_KEY and DEEPGRAM_API_KEY
+cp .env.example .env   # fill in OPENAI_API_KEY and DEEPGRAM_API_KEY; this is the
+                        # only .env the app reads (backend resolves it by
+                        # absolute path regardless of cwd) — don't add another
 make db-up              # start Postgres (and Jaeger, with --profile observability)
 make migrate
 make dev-backend         # FastAPI on :8000

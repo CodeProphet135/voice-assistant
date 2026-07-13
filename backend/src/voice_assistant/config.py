@@ -1,8 +1,15 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Repo root .env is the single source of truth (see .env.example); resolved
+# absolutely so it loads regardless of the process's cwd (e.g. `cd backend`
+# in the dev-backend Makefile target).
+_REPO_ROOT_ENV = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_REPO_ROOT_ENV, extra="ignore")
 
     # LLM
     openai_api_key: str = ""

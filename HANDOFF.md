@@ -17,6 +17,20 @@ reachable); frontend typecheck/build/oxlint clean.
 Design + plan: `docs/superpowers/specs/2026-07-08-phase-4-tools-design.md` and
 `docs/superpowers/plans/2026-07-08-phase-4-tools.md`.
 
+### Housekeeping — single `.env` at repo root (2026-07-12)
+There were two `.env` files: the full one at repo root (matching
+`.env.example`) and a stale 2-key duplicate at `backend/.env`. Because
+`make dev-backend` does `cd backend && uv run uvicorn ...`, `config.py`'s
+`env_file=".env"` was actually resolving to `backend/.env` at runtime — so 6
+of 8 settings (model names, reasoning effort, max tokens, DB URL, OTel
+endpoint) were silently falling back to `Settings`'s Python defaults instead
+of being read from a file, working by coincidence rather than design.
+Fixed by resolving `env_file` to an absolute path
+(`Path(__file__).resolve().parents[3] / ".env"`) so it always points at the
+repo-root `.env` regardless of process cwd, and deleting `backend/.env`.
+**The repo root `.env` (from `cp .env.example .env`) is now the only env
+file** — don't recreate one under `backend/`.
+
 ### Phase 4 — what was built (on `main`)
 - **Tool registry** (`agent/tools/registry.py`): `@tool(name, description,
   parameters)` decorator → module `_REGISTRY` dict; `definitions()` returns
