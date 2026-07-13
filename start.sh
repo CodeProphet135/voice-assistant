@@ -60,3 +60,20 @@ ok "Postgres is ready."
 # --- Migrate ---
 info "Running database migrations..."
 (cd backend && uv run alembic upgrade head)
+
+# --- Run backend + frontend ---
+cleanup() {
+  info "Stopping dev servers..."
+  jobs -p | xargs -r kill 2>/dev/null
+  warn "Postgres and Jaeger are still running in the background. Run 'make down' to stop them."
+}
+trap cleanup EXIT INT TERM
+
+(cd backend && uv run uvicorn voice_assistant.main:app --reload --port 8000 2>&1 | sed -e "s/^/${MAGENTA}[backend]${NC} /") &
+(cd frontend && npm run dev 2>&1 | sed -e "s/^/${CYAN}[frontend]${NC} /") &
+
+sleep 2
+ok "Backend:  http://localhost:8000"
+ok "Frontend: http://localhost:5173"
+
+wait
