@@ -17,7 +17,7 @@ migrate:
 
 test:
 	cd backend && uv run pytest
-	cd frontend && npm run typecheck
+	cd frontend && npm run test && npm run typecheck
 
 lint:
 	cd backend && uv run ruff check .
