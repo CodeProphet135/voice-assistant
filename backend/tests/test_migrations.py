@@ -45,7 +45,8 @@ async def test_alembic_upgrade_head_builds_schema() -> None:
     engine = create_async_engine(settings.database_url)
     try:
         async with engine.connect() as conn:
-            exists = await conn.execute(sa.text("SELECT to_regclass('public.notes')"))
-            assert exists.scalar() == "notes"
+            for table in ("notes", "sessions", "events"):
+                exists = await conn.execute(sa.text(f"SELECT to_regclass('public.{table}')"))
+                assert exists.scalar() == table
     finally:
         await engine.dispose()
