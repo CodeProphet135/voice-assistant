@@ -20,6 +20,7 @@ from starlette.websockets import WebSocketDisconnect
 from websockets.exceptions import ConnectionClosed
 
 from voice_assistant.agent.agent import run_agent
+from voice_assistant.agent.history import truncate_history
 from voice_assistant.agent.tools import registry
 from voice_assistant.agent.tools.registry import ToolContext
 from voice_assistant.config import settings
@@ -59,6 +60,11 @@ _TOOLS: list[dict] = registry.definitions()
 # Sentinel pushed onto the TTS queue to signal the agent producer is done
 # (always enqueued last, even on error, so the drain loop always terminates).
 _TURN_END = object()
+
+# Cap on client-owned conversation history re-sent to OpenAI each turn. Oldest
+# whole turns past this are trimmed (agent/history.py); the system prompt rides
+# in instructions= and is never part of this list, so it's never dropped.
+MAX_INPUT_ITEMS = 40
 
 # An interim transcript with at least this many words barges in on an active
 # turn whenever it isn't classified as echo (see
@@ -207,6 +213,7 @@ class Session:
         """
         async with self._turn_lock:
             with _tracer.start_as_current_span("turn"):
+                self.input_items = truncate_history(self.input_items, MAX_INPUT_ITEMS)
                 self.input_items.append(
                     {
                         "type": "message",
