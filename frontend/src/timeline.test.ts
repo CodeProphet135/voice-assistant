@@ -50,4 +50,40 @@ describe('computeTurns', () => {
     expect(tl.turns[0].cancelled).toBe(true)
     expect(tl.turns[0].segments.find((s) => s.kind === 'speaking')?.end).toBe(900)
   })
+
+  it('does not bind a stale speech_started to a later onsetless turn; keeps rows chronological', () => {
+    const A = 'turn-A'
+    const B = 'turn-B'
+    const events: RecordedEvent[] = [
+      ev(0, 1000, 'speech_started', null),
+      ev(1, 2000, 'stt_final', A, { text: 'first' }),
+      ev(2, 2100, 'tts_start', A, { sentence_index: 0, text: 'ok' }),
+      ev(3, 3000, 'tts_end', A),
+      ev(4, 50000, 'state', B, { state: 'thinking' }),
+      ev(5, 50200, 'tts_start', B, { sentence_index: 0, text: 'sure' }),
+      ev(6, 51000, 'tts_end', B),
+    ]
+    const tl = computeTurns(events)
+    expect(tl.turns.map((t) => t.turnId)).toEqual([A, B])
+    const turnB = tl.turns.find((t) => t.turnId === B)!
+    expect(turnB.t0).toBe(49000)
+    expect(turnB.segments.some((s) => s.kind === 'listening')).toBe(false)
+  })
+
+  it('emits a tool sub-span matched by call_id', () => {
+    const events: RecordedEvent[] = [
+      ev(0, 0, 'stt_final', T, { text: 'weather' }),
+      ev(1, 500, 'tool_call', T, { call_id: 'c1', name: 'get_weather', arguments: '{}' }),
+      ev(2, 900, 'tool_result', T, { call_id: 'c1', name: 'get_weather', output: 'sunny' }),
+      ev(3, 1000, 'tts_start', T, { sentence_index: 0, text: 'its sunny' }),
+      ev(4, 1800, 'tts_end', T),
+    ]
+    const tool = computeTurns(events).turns[0].segments.find((s) => s.kind === 'tool')!
+    expect(tool.start).toBe(500)
+    expect(tool.end).toBe(900)
+  })
+
+  it('returns empty for an empty event list', () => {
+    expect(computeTurns([])).toEqual({ turns: [], start: 0, end: 0 })
+  })
 })
