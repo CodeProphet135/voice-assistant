@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
+from voice_assistant.api import router as api_router
 from voice_assistant.telemetry import configure_telemetry
 
 configure_telemetry()
@@ -30,6 +31,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     session = Session(websocket)
     await session.run()
 
+
+app.include_router(api_router)
 
 # NOTE: this route MUST be declared before the static mount below — FastAPI
 # matches explicit routes before falling through to a mount, but keeping the
