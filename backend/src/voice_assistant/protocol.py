@@ -91,6 +91,15 @@ class SttFinalEvent(BaseModel):
     text: str
 
 
+class SpeechStartedEvent(BaseModel):
+    """Deepgram VAD detected the user beginning to speak (Phase 6). Emitted
+    only when no turn is active, so it marks a genuine user-turn onset (not
+    the assistant's own TTS echo). A Timeline/Replay signal; the live reducer
+    ignores it."""
+
+    type: Literal["speech_started"] = "speech_started"
+
+
 class AssistantDeltaEvent(BaseModel):
     """One streamed chunk of assistant text (token-level), appended in the UI."""
 
@@ -103,6 +112,18 @@ class AssistantDoneEvent(BaseModel):
 
     type: Literal["assistant_done"] = "assistant_done"
     text: str
+
+
+class LlmRequestEvent(BaseModel):
+    """A snapshot of the exact serialized ``input`` sent to the Responses API
+    for one tool-loop iteration (Phase 6). The payoff of the ``store=False``
+    design — fully serializable conversation state per request. Surfaced in
+    the Event Inspector; the live reducer ignores it."""
+
+    type: Literal["llm_request"] = "llm_request"
+    input: list[dict]
+    model: str
+    iteration: int
 
 
 class ToolCallEvent(BaseModel):
@@ -162,10 +183,12 @@ class ErrorEvent(BaseModel):
 ServerEvent = (
     ReadyEvent
     | StateEvent
+    | SpeechStartedEvent
     | SttPartialEvent
     | SttFinalEvent
     | AssistantDeltaEvent
     | AssistantDoneEvent
+    | LlmRequestEvent
     | ToolCallEvent
     | ToolResultEvent
     | TtsStartEvent

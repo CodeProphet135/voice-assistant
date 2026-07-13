@@ -19,10 +19,12 @@ export type PipelineState = 'idle' | 'listening' | 'thinking' | 'speaking'
 export type ServerEvent =
   | { type: 'ready'; session_id: string }
   | { type: 'state'; state: PipelineState }
+  | { type: 'speech_started' }
   | { type: 'stt_partial'; text: string }
   | { type: 'stt_final'; text: string }
   | { type: 'assistant_delta'; text: string }
   | { type: 'assistant_done'; text: string }
+  | { type: 'llm_request'; input: unknown[]; model: string; iteration: number }
   | { type: 'tool_call'; call_id: string; name: string; arguments: string }
   | { type: 'tool_result'; call_id: string; name: string; output: string }
   | { type: 'tts_start'; sentence_index: number; text: string }

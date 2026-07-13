@@ -16,7 +16,7 @@ import os
 # real call. Set a harmless placeholder so these tests need no real key.
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-from conftest import FakeOpenAI, FakeTTSProvider, FakeWebSocket, make_text_turn
+from conftest import FakeEventRecorder, FakeOpenAI, FakeTTSProvider, FakeWebSocket, make_text_turn
 from test_session_stt import FakeSTTProvider
 
 from voice_assistant.providers.base import Transcript
@@ -28,6 +28,7 @@ def make_session(
 ) -> tuple[Session, FakeSTTProvider, FakeTTSProvider]:
     session = Session(fake_ws)
     session.client = fake_openai
+    session._recorder = FakeEventRecorder()  # noqa: SLF001 - keep DB out of fake-ws timing
     fake_stt = FakeSTTProvider()
     session._make_stt_provider = lambda: fake_stt  # noqa: SLF001 - test injection seam
     fake_tts = FakeTTSProvider()
@@ -123,6 +124,7 @@ async def test_text_input_path_also_speaks() -> None:
     fake_openai.responses.script(make_text_turn("Hello there. How are you?"))
     session = Session(fake_ws)
     session.client = fake_openai
+    session._recorder = FakeEventRecorder()  # noqa: SLF001 - keep DB out of fake-ws timing
     fake_tts = FakeTTSProvider()
     session.tts = fake_tts
 

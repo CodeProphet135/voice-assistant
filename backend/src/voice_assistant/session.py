@@ -16,6 +16,7 @@ import uuid
 from collections import deque
 
 from fastapi import WebSocket
+from opentelemetry import trace
 from starlette.websockets import WebSocketDisconnect
 from websockets.exceptions import ConnectionClosed
 
@@ -24,9 +25,11 @@ from voice_assistant.agent.history import truncate_history
 from voice_assistant.agent.tools import registry
 from voice_assistant.agent.tools.registry import ToolContext
 from voice_assistant.config import settings
+from voice_assistant.events import EventRecorder
 from voice_assistant.protocol import (
     ErrorEvent,
     ReadyEvent,
+    SpeechStartedEvent,
     StartEvent,
     StateEvent,
     StopEvent,
@@ -111,7 +114,8 @@ class Session:
     """Owns one WebSocket connection's lifecycle and conversation state."""
 
     def __init__(self, ws: WebSocket) -> None:
-        self.session_id = uuid.uuid4().hex
+        self._session_uuid = uuid.uuid4()
+        self.session_id = self._session_uuid.hex
         self.ws = ws
         self.input_items: list[dict] = []
 
@@ -148,14 +152,19 @@ class Session:
         # the bounded length is the eviction policy.
         self._spoken_recent: deque[str] = deque(maxlen=20)
 
-    async def emit(self, event) -> None:
-        """The single seam every server→client event flows through.
+        self._current_turn_id: uuid.UUID | None = None
+        self._recorder = self._make_event_recorder()
 
-        Phase 6 will also hand this event to an ``EventRecorder`` for
-        append-only persistence here — don't build a second emission path
-        elsewhere when that lands.
-        """
+    async def emit(self, event) -> None:
+        """The single seam every server→client event flows through: send to the
+        WS, then hand to the EventRecorder for append-only persistence."""
         await self.ws.send_json(event.model_dump())
+        ctx = trace.get_current_span().get_span_context()
+        trace_id = format(ctx.trace_id, "032x") if ctx.is_valid else None
+        span_id = format(ctx.span_id, "016x") if ctx.is_valid else None
+        self._recorder.record(
+            event, turn_id=self._current_turn_id, trace_id=trace_id, span_id=span_id
+        )
 
     async def on_sentence(self, sentence: str) -> None:
         """The queue producer side of the agent->TTS pipeline: ``run_agent``
@@ -182,6 +191,14 @@ class Session:
         touching Deepgram or requiring an API key. Mirrors
         ``_make_stt_provider``."""
         return DeepgramTTS()
+
+    def _make_event_recorder(self) -> EventRecorder:
+        """Factory seam so tests can inject a fake recorder."""
+        return EventRecorder(self._session_uuid)
+
+    def _new_turn_id(self) -> uuid.UUID:
+        self._current_turn_id = uuid.uuid4()
+        return self._current_turn_id
 
     async def _run_agent_producer(self) -> None:
         """Run the agent to completion, then always enqueue the terminating
@@ -247,6 +264,7 @@ class Session:
                     await self.emit(
                         StateEvent(state="listening" if self.stt is not None else "idle")
                     )
+                    self._current_turn_id = None
                 except asyncio.CancelledError:
                     # Barge-in (2b) cancels this task. Cancel the agent
                     # producer, let it unwind, then propagate. Do NOT emit
@@ -266,6 +284,8 @@ class Session:
                     raise
 
     async def _handle_text_input(self, event: TextInputEvent) -> None:
+        self._new_turn_id()
+        self._recorder.note_title(event.text)
         await self._run_turn(event.text)
 
     def _turn_active(self) -> bool:
@@ -332,6 +352,7 @@ class Session:
         self._turn_task = None
         await self.emit(TtsCancelEvent())
         await self.emit(StateEvent(state="listening"))
+        self._current_turn_id = None
 
     def schedule_timer(self, seconds: int, label: str | None) -> str:
         """Start a tracked countdown task and return its id. Called by the
@@ -351,6 +372,7 @@ class Session:
             await asyncio.sleep(seconds)
             await self.emit(TimerFiredEvent(timer_id=timer_id, label=label or ""))
             phrase = f"Your {label} timer is done." if label else "Your timer is done."
+            self._new_turn_id()
             async with self._turn_lock:
                 with _tracer.start_as_current_span("turn"):
                     await self.emit(StateEvent(state="speaking"))
@@ -367,6 +389,7 @@ class Session:
             raise
         finally:
             self._timer_tasks.pop(timer_id, None)
+            self._current_turn_id = None
 
     async def _consume_stt(self) -> None:
         """Drain normalized STT events, surfacing partial/final transcripts
@@ -406,12 +429,12 @@ class Session:
                     if ev.speech_final:
                         await self._commit_stt_turn()
                 elif isinstance(ev, SpeechStarted):
-                    # Deepgram's VAD fires on any noise -- including our own
-                    # TTS echoing back through the mic -- and carries no text
-                    # to check against _spoken_recent, so it can no longer
-                    # trigger barge-in by itself; a substantial interim
-                    # transcript (above) does that job now.
-                    pass
+                    # VAD fires on any noise incl. our own TTS echo during
+                    # SPEAKING; emit only when no turn is active so recorded
+                    # speech_started marks a genuine user-turn onset. Still a
+                    # no-op for barge-in (interim transcripts own that).
+                    if not self._turn_active():
+                        await self.emit(SpeechStartedEvent())
                 elif isinstance(ev, UtteranceEnd):
                     # Fallback turn-end signal when speech_final never fires.
                     await self._commit_stt_turn()
@@ -458,6 +481,8 @@ class Session:
         if self._turn_active():
             await self._barge_in()
 
+        self._new_turn_id()
+        self._recorder.note_title(utterance)
         await self.emit(SttFinalEvent(text=utterance))
         self._turn_task = asyncio.create_task(self._run_turn(utterance))
 
@@ -513,6 +538,7 @@ class Session:
     async def run(self) -> None:
         """Main connection loop: greet, then dispatch incoming frames until
         the socket closes."""
+        await self._recorder.start()
         await self.emit(ReadyEvent(session_id=self.session_id))
         try:
             while True:
@@ -549,3 +575,4 @@ class Session:
                 await self.tts.aclose()
             except Exception:  # noqa: BLE001 - best-effort, never crash on teardown
                 _logger.warning("Error closing TTS provider", exc_info=True)
+            await self._recorder.stop()

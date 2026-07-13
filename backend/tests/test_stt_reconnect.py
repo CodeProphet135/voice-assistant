@@ -10,7 +10,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from types import SimpleNamespace
 
-from conftest import FakeOpenAI, FakeTTSProvider, FakeWebSocket
+from conftest import FakeEventRecorder, FakeOpenAI, FakeTTSProvider, FakeWebSocket
 
 from voice_assistant.providers.base import SttClosed, Transcript
 from voice_assistant.providers.deepgram import DeepgramSTT
@@ -151,6 +151,7 @@ async def test_session_surfaces_sttclosed_and_goes_idle() -> None:
     fake_ws = FakeWebSocket()
     session = Session(fake_ws)
     session.client = FakeOpenAI()
+    session._recorder = FakeEventRecorder()  # noqa: SLF001 - keep DB out of fake-ws timing
     session.tts = FakeTTSProvider()
     closing = _ClosingSTT()
     session._make_stt_provider = lambda: closing  # noqa: SLF001

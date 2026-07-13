@@ -13,6 +13,7 @@ import os
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from conftest import (
+    FakeEventRecorder,
     FakeTTSProvider,
     FakeWebSocket,
     _FakeStream,
@@ -61,6 +62,7 @@ class BargeInClient:
 def make_session(fake_ws: FakeWebSocket, client: BargeInClient):
     session = Session(fake_ws)
     session.client = client
+    session._recorder = FakeEventRecorder()  # noqa: SLF001 - keep DB out of fake-ws timing
     fake_stt = FakeSTTProvider()
     session._make_stt_provider = lambda: fake_stt  # noqa: SLF001 - test injection seam
     fake_tts = FakeTTSProvider()

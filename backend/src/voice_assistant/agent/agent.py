@@ -22,6 +22,7 @@ from voice_assistant.protocol import (
     AssistantDeltaEvent,
     AssistantDoneEvent,
     ErrorEvent,
+    LlmRequestEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
@@ -73,12 +74,19 @@ async def run_agent(
     chunker = Chunker()
     full_text_parts: list[str] = []
 
-    for _ in range(MAX_TOOL_LOOP_ITERATIONS):
+    for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
         function_calls: list[Any] = []
 
         try:
             with _tracer.start_as_current_span("llm.request") as span:
                 span.set_attribute("model", settings.openai_model)
+                await emit(
+                    LlmRequestEvent(
+                        input=list(input_items),
+                        model=settings.openai_model,
+                        iteration=iteration,
+                    )
+                )
                 stream = await client.responses.create(
                     model=settings.openai_model,
                     instructions=SYSTEM_PROMPT,

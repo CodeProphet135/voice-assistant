@@ -11,6 +11,8 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 def make_text_delta_event(delta: str) -> SimpleNamespace:
@@ -156,3 +158,65 @@ class FakeTTSProvider:
 @pytest.fixture
 def fake_tts() -> FakeTTSProvider:
     return FakeTTSProvider()
+
+
+class FakeEventRecorder:
+    """No-op stand-in for ``events.EventRecorder`` (same public surface:
+    ``start``/``stop``/``record``/``note_title``), injected via
+    ``session._recorder`` in fake-WebSocket-driven Session tests.
+
+    ``Session.run()`` awaits ``self._recorder.start()`` as its first line.
+    The real ``EventRecorder`` does genuine Postgres I/O there (tens of ms
+    even on localhost), which -- unlike CPU-bound work -- doesn't complete
+    within a test's ``await asyncio.sleep(0)`` budget. That breaks the
+    fake-websocket tests' timing: ``asyncio.Queue.get()`` resolves without
+    yielding when the queue is already non-empty, so a ``disconnect``
+    queued (synchronously, no real delay) while ``run()`` is still stuck
+    awaiting the recorder's DB round-trip gets consumed immediately once
+    ``run()`` resumes -- before the freshly spawned ``_consume_stt`` task
+    ever gets scheduled to process already-pushed STT events. Swapping in
+    this no-op keeps those tests hermetic and their timing deterministic."""
+
+    def __init__(self) -> None:
+        self._seq = 0
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    def record(self, event, *, turn_id, trace_id, span_id) -> None:
+        return None
+
+    def note_title(self, text: str) -> None:
+        return None
+
+
+@pytest_asyncio.fixture
+async def pg_db(monkeypatch):
+    """Bind db.async_session_factory to a rolled-back Postgres transaction with
+    all tables created. Skips when Postgres is unreachable."""
+    from voice_assistant import db as db_module
+    from voice_assistant.config import settings
+    from voice_assistant.models import Base
+
+    engine = create_async_engine(settings.database_url)
+    try:
+        conn = await engine.connect()
+    except Exception:
+        await engine.dispose()
+        pytest.skip("Postgres not reachable")
+
+    trans = await conn.begin()
+    await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(
+        bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
+    monkeypatch.setattr(db_module, "async_session_factory", factory)
+    try:
+        yield
+    finally:
+        await trans.rollback()
+        await conn.close()
+        await engine.dispose()

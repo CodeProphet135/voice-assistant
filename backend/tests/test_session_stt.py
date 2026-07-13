@@ -16,6 +16,7 @@ import os
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from conftest import (
+    FakeEventRecorder,
     FakeOpenAI,
     FakeTTSProvider,
     FakeWebSocket,
@@ -64,6 +65,7 @@ def make_session(
 ) -> tuple[Session, FakeSTTProvider]:
     session = Session(fake_ws)
     session.client = fake_openai
+    session._recorder = FakeEventRecorder()  # noqa: SLF001 - keep DB out of fake-ws timing
     fake_stt = FakeSTTProvider()
     session._make_stt_provider = lambda: fake_stt  # noqa: SLF001 - test injection seam
     session.tts = FakeTTSProvider()  # keep TTS hermetic/offline for STT-path tests
@@ -318,6 +320,7 @@ async def test_stop_does_not_abort_in_flight_turn() -> None:
 
     session = Session(fake_ws)
     session.client = GatedClient()
+    session._recorder = FakeEventRecorder()  # noqa: SLF001 - keep DB out of fake-ws timing
     fake_stt = FakeSTTProvider()
     session._make_stt_provider = lambda: fake_stt  # noqa: SLF001 - test injection seam
     session.tts = FakeTTSProvider()  # keep TTS hermetic/offline
@@ -371,6 +374,7 @@ async def test_text_input_path_still_works_unchanged() -> None:
     fake_openai.responses.script(make_text_turn("Hello there"))
     session = Session(fake_ws)
     session.client = fake_openai
+    session._recorder = FakeEventRecorder()  # noqa: SLF001 - keep DB out of fake-ws timing
     session.tts = FakeTTSProvider()  # keep TTS hermetic/offline
 
     fake_ws.queue_text('{"type": "text_input", "text": "hi"}')
