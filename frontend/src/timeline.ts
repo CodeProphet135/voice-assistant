@@ -51,6 +51,7 @@ export function computeTurns(events: RecordedEvent[]): Timeline {
   for (const [turnId, group] of byTurn) {
     const first = group[0]
     const sttFinal = group.find((e) => e.type === 'stt_final')
+    const timerFired = group.find((e) => e.type === 'timer_fired')
     const firstTts = group.find((e) => e.type === 'tts_start')
     const ended = group.find((e) => e.type === 'tts_end' || e.type === 'tts_cancel')
     const cancelled = group.some((e) => e.type === 'tts_cancel')
@@ -94,7 +95,13 @@ export function computeTurns(events: RecordedEvent[]): Timeline {
     }
 
     const tEnd = ended ? rel(ended) : rel(group[group.length - 1])
-    const utterance = (sttFinal?.payload as { text?: string } | undefined)?.text ?? null
+    // Voice turns label from their stt_final; timer-notification turns (no
+    // stt_final) label from the fired timer instead of showing an unlabelled
+    // "Turn N".
+    const timerLabel = (timerFired?.payload as { label?: string } | undefined)?.label
+    const utterance =
+      (sttFinal?.payload as { text?: string } | undefined)?.text ??
+      (timerFired ? `⏰ ${timerLabel ? `${timerLabel} timer` : 'Timer'}` : null)
     turns.push({ turnId, t0, tEnd, cancelled, utterance, segments })
 
     prevEndAbs = ms(ended ?? group[group.length - 1])

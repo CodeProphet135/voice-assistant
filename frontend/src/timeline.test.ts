@@ -86,4 +86,18 @@ describe('computeTurns', () => {
   it('returns empty for an empty event list', () => {
     expect(computeTurns([])).toEqual({ turns: [], start: 0, end: 0 })
   })
+
+  it('groups a timer notification into one labelled turn', () => {
+    const TT = 'turn-timer'
+    const events: RecordedEvent[] = [
+      ev(0, 1000, 'timer_fired', TT, { timer_id: 'x1', label: 'tea' }),
+      ev(1, 1000, 'state', TT, { state: 'speaking' }),
+      ev(2, 1000, 'tts_start', TT, { sentence_index: 0, text: 'Your tea timer is done.' }),
+      ev(3, 1500, 'tts_end', TT),
+    ]
+    const tl = computeTurns(events)
+    expect(tl.turns).toHaveLength(1)
+    expect(tl.turns[0].turnId).toBe(TT)
+    expect(tl.turns[0].utterance).toBe('⏰ tea timer')
+  })
 })

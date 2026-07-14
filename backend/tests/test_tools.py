@@ -152,3 +152,37 @@ async def test_timers_cancelled_on_session_teardown():
     ws.queue_disconnect()
     await session.run()
     assert session._timer_tasks == {}
+
+
+async def test_timer_events_share_one_non_null_turn_id():
+    session, _ws, _tts = _timer_session()
+
+    class _CapturingRecorder:
+        def __init__(self):
+            self.recorded = []  # list[tuple[type, turn_id]]
+
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+        def record(self, event, *, turn_id, trace_id, span_id):
+            self.recorded.append((event.type, turn_id))
+
+        def note_title(self, text):
+            return None
+
+    rec = _CapturingRecorder()
+    session._recorder = rec
+
+    session.schedule_timer(0, "tea")
+    await _drive()
+
+    types = [t for t, _ in rec.recorded]
+    assert "timer_fired" in types
+    # timer_fired must be tagged with a real turn id...
+    tf_turn = next(tid for typ, tid in rec.recorded if typ == "timer_fired")
+    assert tf_turn is not None
+    # ...and every event of the timer notification shares it.
+    assert all(tid == tf_turn for _typ, tid in rec.recorded)

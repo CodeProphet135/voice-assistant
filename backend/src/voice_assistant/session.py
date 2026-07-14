@@ -368,18 +368,20 @@ class Session:
         return timer_id
 
     async def _fire_timer(self, timer_id: str, seconds: int, label: str | None) -> None:
-        """Wait out the timer, emit ``timer_fired``, then speak a fixed phrase
-        through the existing TTS path. The spoken part takes ``_turn_lock`` so
-        it never talks over an in-flight assistant turn (it just waits its
-        turn -- a background notification needs no barge-in semantics)."""
+        """Wait out the timer, then emit ``timer_fired`` and speak a fixed
+        phrase through the existing TTS path -- all under ``_turn_lock`` and a
+        single fresh turn id, so the notification never talks over an in-flight
+        turn and every recorded event (incl. ``timer_fired``) shares one
+        turn_id. Waiting for the lock also prevents a concurrent conversation
+        turn's ``_current_turn_id`` from being clobbered."""
         try:
             await asyncio.sleep(seconds)
-            await self.emit(TimerFiredEvent(timer_id=timer_id, label=label or ""))
             phrase = f"Your {label} timer is done." if label else "Your timer is done."
             async with self._turn_lock:
                 self._new_turn_id()
                 try:
                     with _tracer.start_as_current_span("turn"):
+                        await self.emit(TimerFiredEvent(timer_id=timer_id, label=label or ""))
                         await self.emit(StateEvent(state="speaking"))
                         await self.emit(TtsStartEvent(sentence_index=0, text=phrase))
                         with _tracer.start_as_current_span("tts.synthesize") as span:
