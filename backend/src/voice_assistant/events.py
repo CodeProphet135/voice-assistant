@@ -4,7 +4,13 @@ One recorder per Session. ``record()`` is a synchronous, non-blocking call on
 the hot path: it assigns monotonic ``seq`` + metadata and enqueues onto an
 in-memory queue. A background task batch-writes to Postgres off the hot path.
 Best-effort: a DB failure logs and is swallowed so it never breaks the live
-conversation, and the recorder self-disables when Postgres is unreachable."""
+conversation. A transient failure is retried with backoff; if enough batches
+fail in a row the recorder self-disables and periodically re-probes
+reachability (mirroring the one-shot probe in ``start()``), re-enabling once
+Postgres is reachable again. ``seq`` is assigned before a batch is attempted
+and is never reused, so a batch that is still permanently dropped after
+retries leaves a real, detectable hole in the persisted ``seq`` column --
+see ``gaps.find_seq_gaps``, used by the read-side API."""
 
 import asyncio
 import logging
@@ -16,6 +22,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from voice_assistant import db
+from voice_assistant.config import settings
 from voice_assistant.models import Event
 from voice_assistant.models import Session as SessionRow
 
@@ -52,6 +59,9 @@ class EventRecorder:
         # an idle page load, a reload without talking, StrictMode's dev
         # double-connect -- leaves no "(untitled session)" row behind.
         self._session_created = False
+        # Consecutive fully-exhausted batch failures; reset on any success.
+        self._consecutive_failures = 0
+        self._reprobe_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         # Probe reachability only; do NOT create the session row here (that is
@@ -100,48 +110,94 @@ class EventRecorder:
             await self._write_batch(batch)
 
     async def _write_batch(self, batch: list[RecordedEvent]) -> None:
-        try:
-            async with db.async_session_factory() as s:
-                # Create the sessions row on first write so the events FK is
-                # satisfied. ON CONFLICT DO NOTHING keeps it idempotent if a
-                # prior batch already created it (the flag guards the common
-                # case; this guards a retried batch after a failed commit).
-                if not self._session_created:
-                    await s.execute(
-                        pg_insert(SessionRow)
-                        .values(id=self._session_id)
-                        .on_conflict_do_nothing(index_elements=["id"])
-                    )
-                s.add_all(
-                    [
-                        Event(
-                            session_id=r.metadata.session_id,
-                            seq=r.metadata.seq,
-                            ts=r.metadata.ts,
-                            turn_id=r.metadata.turn_id,
-                            trace_id=r.metadata.trace_id,
-                            span_id=r.metadata.span_id,
-                            type=r.payload["type"],
-                            payload=r.payload,
+        start_seq, end_seq = batch[0].metadata.seq, batch[-1].metadata.seq
+        for attempt in range(settings.event_write_max_attempts):
+            try:
+                async with db.async_session_factory() as s:
+                    # Create the sessions row on first write so the events FK is
+                    # satisfied. ON CONFLICT DO NOTHING keeps it idempotent if a
+                    # prior batch already created it (the flag guards the common
+                    # case; this guards a retried batch after a failed commit).
+                    if not self._session_created:
+                        await s.execute(
+                            pg_insert(SessionRow)
+                            .values(id=self._session_id)
+                            .on_conflict_do_nothing(index_elements=["id"])
                         )
-                        for r in batch
-                    ]
+                    s.add_all(
+                        [
+                            Event(
+                                session_id=r.metadata.session_id,
+                                seq=r.metadata.seq,
+                                ts=r.metadata.ts,
+                                turn_id=r.metadata.turn_id,
+                                trace_id=r.metadata.trace_id,
+                                span_id=r.metadata.span_id,
+                                type=r.payload["type"],
+                                payload=r.payload,
+                            )
+                            for r in batch
+                        ]
+                    )
+                    await s.commit()
+                    # Only mark created after a successful commit -- a failed
+                    # commit leaves the flag False so the next batch retries the
+                    # row insert.
+                    self._session_created = True
+                self._consecutive_failures = 0
+                return
+            except Exception:  # noqa: BLE001 - best effort; dropped events must not crash
+                is_last_attempt = attempt == settings.event_write_max_attempts - 1
+                if not is_last_attempt:
+                    _logger.warning(
+                        "EventRecorder batch write failed (seq %d-%d), retrying "
+                        "(attempt %d/%d)",
+                        start_seq, end_seq, attempt + 1, settings.event_write_max_attempts,
+                        exc_info=True,
+                    )
+                    await asyncio.sleep(settings.event_write_retry_base_seconds * (2**attempt))
+                    continue
+                _logger.error(
+                    "EventRecorder dropping batch after %d attempts (seq %d-%d, %d events)",
+                    settings.event_write_max_attempts, start_seq, end_seq, len(batch),
+                    exc_info=True,
                 )
-                await s.commit()
-                # Only mark created after a successful commit -- a failed
-                # commit leaves the flag False so the next batch retries the
-                # row insert.
-                self._session_created = True
-        except Exception:  # noqa: BLE001 - best effort; dropped events must not crash
-            _logger.warning(
-                "EventRecorder batch write failed (%d events)", len(batch), exc_info=True
-            )
+                self._consecutive_failures += 1
+                self._maybe_disable_and_reprobe()
+
+    def _maybe_disable_and_reprobe(self) -> None:
+        if self._consecutive_failures < settings.event_recorder_max_consecutive_failures:
+            return
+        if self._reprobe_task is not None and not self._reprobe_task.done():
+            return
+        self._enabled = False
+        _logger.warning(
+            "EventRecorder disabled after %d consecutive batch failures; "
+            "reprobing every %.1fs",
+            self._consecutive_failures, settings.event_recorder_reprobe_seconds,
+        )
+        self._reprobe_task = asyncio.create_task(self._reprobe_loop())
+
+    async def _reprobe_loop(self) -> None:
+        while True:
+            await asyncio.sleep(settings.event_recorder_reprobe_seconds)
+            try:
+                async with db.async_session_factory() as s:
+                    await s.execute(sa.text("SELECT 1"))
+            except Exception:  # noqa: BLE001 - keep reprobing until reachable
+                continue
+            self._consecutive_failures = 0
+            self._enabled = True
+            _logger.warning("EventRecorder re-enabled: database reachable again")
+            return
 
     async def stop(self) -> None:
-        if not self._enabled:
+        if self._reprobe_task is not None and not self._reprobe_task.done():
+            self._reprobe_task.cancel()
+        if not self._enabled and self._task is None:
             return
-        self._queue.put_nowait(_STOP)
         if self._task is not None:
+            self._queue.put_nowait(_STOP)
             try:
                 await self._task
             except Exception:  # noqa: BLE001

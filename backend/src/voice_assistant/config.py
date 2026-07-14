@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://va:va@localhost:5432/voice_assistant"
 
+    # Event recording: batch-write retry/backoff, and self-disable + periodic
+    # reachability re-probe after repeated batch-write failures (mirrors the
+    # one-shot probe EventRecorder.start() already does).
+    event_write_max_attempts: int = 3
+    event_write_retry_base_seconds: float = 0.2
+    event_recorder_max_consecutive_failures: int = 3
+    event_recorder_reprobe_seconds: float = 5.0
+
     # Observability
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "voice-assistant"
