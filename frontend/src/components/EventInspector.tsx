@@ -12,12 +12,12 @@ export function EventInspector({
   onSelect: (n: number) => void
 }) {
   const current = events[selected]
-  const gapsByAfterSeq = new Map(findSeqGaps(events).map((g) => [g.afterSeq, g]))
+  const gapsByBeforeSeq = new Map(findSeqGaps(events).map((g) => [g.beforeSeq, g]))
   return (
     <div className="inspector">
       <ol className="inspector-list">
         {events.map((e, i) => {
-          const gap = gapsByAfterSeq.get(e.seq)
+          const gap = gapsByBeforeSeq.get(e.seq)
           return (
             <Fragment key={i}>
               {gap && (
