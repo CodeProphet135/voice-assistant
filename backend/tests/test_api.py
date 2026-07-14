@@ -1,6 +1,7 @@
 """REST endpoint tests (Phase 6). Seed rows in a rolled-back Postgres tx and
 call the endpoint coroutines directly against the monkeypatched factory."""
 
+import logging
 import os
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
@@ -94,3 +95,31 @@ async def test_endpoints_serialize_over_http(pg_db):
 
         r3 = await client.get(f"/api/sessions/{uuid.uuid4()}/events")
         assert r3.status_code == 404
+
+
+async def test_list_events_logs_seq_gap(pg_db, caplog):
+    sid = uuid.uuid4()
+    async with db.async_session_factory() as s:
+        s.add(SessionRow(id=sid, title="gap"))
+        await s.flush()
+        s.add_all(
+            [
+                Event(
+                    session_id=sid, seq=0, ts=datetime.now(UTC), turn_id=None,
+                    trace_id=None, span_id=None, type="ready",
+                    payload={"type": "ready", "session_id": sid.hex},
+                ),
+                Event(
+                    session_id=sid, seq=3, ts=datetime.now(UTC), turn_id=None,
+                    trace_id=None, span_id=None, type="state",
+                    payload={"type": "state", "state": "thinking"},
+                ),
+            ]
+        )
+        await s.commit()
+
+    with caplog.at_level(logging.WARNING, logger="voice_assistant.api"):
+        out = await list_events(sid)
+
+    assert [e.seq for e in out] == [0, 3]
+    assert any("seq gap" in r.message for r in caplog.records)

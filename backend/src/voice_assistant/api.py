@@ -1,5 +1,6 @@
 """Read-only REST surface for the Timeline/Replay UI (Phase 6)."""
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -8,10 +9,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from voice_assistant import db
+from voice_assistant.gaps import find_seq_gaps
 from voice_assistant.models import Event
 from voice_assistant.models import Session as SessionRow
 
 router = APIRouter(prefix="/api")
+_logger = logging.getLogger(__name__)
 
 
 class SessionSummary(BaseModel):
@@ -57,4 +60,14 @@ async def list_events(session_id: uuid.UUID):
                 sa.select(Event).where(Event.session_id == session_id).order_by(Event.seq)
             )
         ).scalars().all()
+    gaps = find_seq_gaps([r.seq for r in rows])
+    if gaps:
+        _logger.warning(
+            "session %s has %d seq gap(s): %s",
+            session_id,
+            len(gaps),
+            ", ".join(
+                f"{g.after_seq}->{g.before_seq} ({g.missing_count} missing)" for g in gaps
+            ),
+        )
     return rows
