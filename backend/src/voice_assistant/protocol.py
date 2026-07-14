@@ -137,11 +137,16 @@ class ToolCallEvent(BaseModel):
 
 
 class ToolResultEvent(BaseModel):
-    """A tool finished; ``output`` is the string handed back to the model."""
+    """A tool finished; ``output`` is the string handed back to the model.
+    ``arguments`` is the *final* JSON string the model produced for the call
+    (the streamed-open ``tool_call`` frame carries it empty, so consumers
+    backfill from here). Optional/defaulted so older persisted payloads that
+    predate this field still validate."""
 
     type: Literal["tool_result"] = "tool_result"
     call_id: str
     name: str
+    arguments: str = ""
     output: str
 
 

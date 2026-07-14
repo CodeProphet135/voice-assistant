@@ -157,7 +157,14 @@ async def run_agent(
                     "output": output,
                 }
             )
-            await emit(ToolResultEvent(call_id=item.call_id, name=item.name, output=output))
+            await emit(
+                ToolResultEvent(
+                    call_id=item.call_id,
+                    name=item.name,
+                    arguments=item.arguments,
+                    output=output,
+                )
+            )
 
     trailing = chunker.flush()
     if trailing:

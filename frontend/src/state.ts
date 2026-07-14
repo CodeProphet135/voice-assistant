@@ -140,9 +140,18 @@ export function reducer(state: AppState, action: Action): AppState {
     }
 
     case 'tool_result': {
+      // Backfill the final arguments: the tool_call frame is emitted before
+      // the model finishes streaming its argument tokens, so it can carry
+      // empty args; tool_result carries the complete value. Fall back to the
+      // entry's existing args for older recordings that predate the field.
       const toolActivity = state.toolActivity.map((entry) =>
         entry.call_id === action.call_id
-          ? { ...entry, status: 'done' as const, output: action.output }
+          ? {
+              ...entry,
+              status: 'done' as const,
+              arguments: action.arguments ?? entry.arguments,
+              output: action.output,
+            }
           : entry,
       )
       return { ...state, toolActivity }

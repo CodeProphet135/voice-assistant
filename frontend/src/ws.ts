@@ -26,7 +26,7 @@ export type ServerEvent =
   | { type: 'assistant_done'; text: string }
   | { type: 'llm_request'; input: unknown[]; model: string; iteration: number }
   | { type: 'tool_call'; call_id: string; name: string; arguments: string }
-  | { type: 'tool_result'; call_id: string; name: string; output: string }
+  | { type: 'tool_result'; call_id: string; name: string; arguments: string; output: string }
   | { type: 'tts_start'; sentence_index: number; text: string }
   | { type: 'tts_end' }
   | { type: 'tts_cancel' }

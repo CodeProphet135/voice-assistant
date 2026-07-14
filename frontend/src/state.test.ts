@@ -9,7 +9,13 @@ const SCRIPT: Array<ServerEvent | { type: 'user_submit'; text: string }> = [
   { type: 'stt_final', text: 'weather in Tokyo' },
   { type: 'state', state: 'thinking' },
   { type: 'tool_call', call_id: 'c1', name: 'get_weather', arguments: '{"city":"Tokyo"}' },
-  { type: 'tool_result', call_id: 'c1', name: 'get_weather', output: 'sunny' },
+  {
+    type: 'tool_result',
+    call_id: 'c1',
+    name: 'get_weather',
+    arguments: '{"city":"Tokyo"}',
+    output: 'sunny',
+  },
   { type: 'assistant_delta', text: "It's " },
   { type: 'assistant_delta', text: 'sunny.' },
   { type: 'assistant_done', text: "It's sunny." },
@@ -57,5 +63,22 @@ describe('reducer', () => {
     expect(populated.messages.length).toBeGreaterThan(0)
     const afterReset = reducer(populated, { type: 'reset' })
     expect(afterReset).toEqual(initialState)
+  })
+
+  it('backfills tool arguments from tool_result when tool_call streamed empty args', () => {
+    const script: ServerEvent[] = [
+      { type: 'tool_call', call_id: 'c1', name: 'get_weather', arguments: '' },
+      {
+        type: 'tool_result',
+        call_id: 'c1',
+        name: 'get_weather',
+        arguments: '{"city":"Tokyo"}',
+        output: 'sunny',
+      },
+    ]
+    const final = script.reduce((s, a) => reducer(s, a as never), initialState)
+    expect(final.toolActivity[0].arguments).toBe('{"city":"Tokyo"}')
+    expect(final.toolActivity[0].output).toBe('sunny')
+    expect(final.toolActivity[0].status).toBe('done')
   })
 })

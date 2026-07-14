@@ -215,3 +215,29 @@ async def test_iteration_cap_stops_infinite_function_call_loop() -> None:
 
     done_events = [e for e in recorder.events if isinstance(e, AssistantDoneEvent)]
     assert len(done_events) == 1
+
+
+async def test_tool_result_event_carries_final_arguments() -> None:
+    client = FakeOpenAI()
+    client.responses.script(
+        make_function_call_turn(call_id="call_1", name="get_weather", arguments='{"city":"Tokyo"}')
+    )
+    client.responses.script(make_text_turn("done"))
+    recorder = Recorder()
+
+    async def tool_executor(name: str, arguments: str, call_id: str) -> str:
+        return "sunny"
+
+    await run_agent(
+        client=client,
+        input_items=[],
+        tools=[],
+        emit=recorder.emit,
+        on_sentence=recorder.on_sentence,
+        tool_executor=tool_executor,
+    )
+
+    tool_result_events = [e for e in recorder.events if isinstance(e, ToolResultEvent)]
+    assert len(tool_result_events) == 1
+    assert tool_result_events[0].arguments == '{"city":"Tokyo"}'
+    assert tool_result_events[0].output == "sunny"
