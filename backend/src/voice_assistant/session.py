@@ -156,15 +156,19 @@ class Session:
         self._recorder = self._make_event_recorder()
 
     async def emit(self, event) -> None:
-        """The single seam every server→client event flows through: send to the
-        WS, then hand to the EventRecorder for append-only persistence."""
-        await self.ws.send_json(event.model_dump())
+        """The single seam every server→client event flows through. Record
+        for append-only persistence FIRST, then send to the WS. Recording
+        first makes ``seq`` assignment synchronous (so concurrent emits from
+        the turn task and the STT consumer can't interleave their seq order)
+        and guarantees a failed WS send never drops the event from the
+        durable log -- the log is a faithful superset of what was delivered."""
         ctx = trace.get_current_span().get_span_context()
         trace_id = format(ctx.trace_id, "032x") if ctx.is_valid else None
         span_id = format(ctx.span_id, "016x") if ctx.is_valid else None
         self._recorder.record(
             event, turn_id=self._current_turn_id, trace_id=trace_id, span_id=span_id
         )
+        await self.ws.send_json(event.model_dump())
 
     async def on_sentence(self, sentence: str) -> None:
         """The queue producer side of the agent->TTS pipeline: ``run_agent``
