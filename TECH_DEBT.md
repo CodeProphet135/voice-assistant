@@ -22,6 +22,13 @@ history. Nothing here blocks running the app; fix opportunistically.
 - **Text-input path isn't under `_turn_lock`.** Only the STT-commit path is
   serialized; typing and speaking at the same instant could race
   `input_items`. Low-probability, not yet hit in practice.
+- **A dropped event batch is detected but not recovered.** `EventRecorder`
+  now retries transient write failures and self-disables + re-probes after
+  repeated failures (see `events.py`), and `list_events` logs a warning and
+  the Event Inspector shows a banner when persisted `seq` values have a gap
+  (`gaps.py` / `gaps.ts`). But a batch that is still permanently lost after
+  all retries has no recovery path — there's no re-synthesis, backfill, or
+  operator alert beyond the log line and the UI banner.
 - **start.sh** prints the green "ready" URLs after a blind `sleep 2`, even if backend/frontend crashed immediately (bad import, port already taken) — the user sees "ready" for a dead server. Fix by capturing each job's PID and checking it's still alive before printing ready
 -  **Minor issues with start.sh**: (1) `read` under set -e aborts ungracefully on closed stdin/non-interactive invocation, (2) sed key substitution isn't metacharacter-safe for keys containing |, &, \, (3) color codes print raw escape sequences when output is redirected to a file.
 
