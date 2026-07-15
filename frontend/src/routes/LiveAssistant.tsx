@@ -5,6 +5,25 @@ import { StatusBadge } from '../components/StatusBadge'
 import { Transcript } from '../components/Transcript'
 import { useLiveSession } from '../LiveSessionContext'
 
+function SendIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 19V5" />
+      <path d="M5 12l7-7 7 7" />
+    </svg>
+  )
+}
+
 export function LiveAssistant() {
   const { state, dispatch, client, connectionStatus, newSession } = useLiveSession()
   const [inputText, setInputText] = useState('')
@@ -31,51 +50,60 @@ export function LiveAssistant() {
 
   const isThinking = state.status === 'thinking' && !state.assistantInProgress
   const canSend = connectionStatus === 'open' && inputText.trim().length > 0
+  const heroStatus = connectionStatus === 'open' ? state.status : connectionStatus
 
   return (
-    <main>
-      <header className="app-header">
-        <h1>Voice Assistant</h1>
-        <StatusBadge connectionStatus={connectionStatus} pipelineState={state.status} />
-        <button type="button" className="nav-link" onClick={newSession}>
-          New session
-        </button>
-        <Link className="nav-link" to="/sessions">Sessions</Link>
-      </header>
+    <main className="live">
+      <div className="shell live-shell">
+        <header className="app-header">
+          <h1 className="brand">Voice Assistant</h1>
+          <StatusBadge connectionStatus={connectionStatus} pipelineState={state.status} />
+          <div className="header-actions">
+            <button type="button" className="btn-ghost" onClick={newSession}>
+              New session
+            </button>
+            <Link className="nav-link" to="/sessions">
+              Sessions
+            </Link>
+          </div>
+        </header>
 
-      {state.error && <p className="error-banner">{state.error}</p>}
+        {state.error && <p className="error-banner">{state.error}</p>}
 
-      {state.notifications.length > 0 && (
-        <ul className="notifications">
-          {state.notifications.map((note, index) => (
-            <li key={index} className="notification">
-              ⏱ {note}
-            </li>
-          ))}
-        </ul>
-      )}
+        {state.notifications.length > 0 && (
+          <ul className="notifications">
+            {state.notifications.map((note, index) => (
+              <li key={index} className="notification">
+                ⏱ {note}
+              </li>
+            ))}
+          </ul>
+        )}
 
-      <Transcript
-        messages={state.messages}
-        isThinking={isThinking}
-        toolActivity={state.toolActivity}
-        sttPartial={state.sttPartial}
-      />
-
-      <form className="input-row" onSubmit={handleSubmit}>
-        <MicButton client={client} dispatch={dispatch} connectionStatus={connectionStatus} />
-        <input
-          type="text"
-          value={inputText}
-          onChange={(event) => setInputText(event.target.value)}
-          placeholder="Type a message…"
-          disabled={connectionStatus !== 'open'}
-          autoFocus
+        <Transcript
+          messages={state.messages}
+          isThinking={isThinking}
+          toolActivity={state.toolActivity}
+          sttPartial={state.sttPartial}
+          hero
+          status={heroStatus}
         />
-        <button type="submit" disabled={!canSend}>
-          Send
-        </button>
-      </form>
+
+        <form className="composer" onSubmit={handleSubmit}>
+          <MicButton client={client} dispatch={dispatch} connectionStatus={connectionStatus} />
+          <input
+            type="text"
+            value={inputText}
+            onChange={(event) => setInputText(event.target.value)}
+            placeholder="Type a message…"
+            disabled={connectionStatus !== 'open'}
+            autoFocus
+          />
+          <button type="submit" className="btn-send" disabled={!canSend} aria-label="Send message">
+            <SendIcon />
+          </button>
+        </form>
+      </div>
     </main>
   )
 }

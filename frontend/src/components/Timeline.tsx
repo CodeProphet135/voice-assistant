@@ -1,27 +1,35 @@
 import { computeTurns, type SegmentKind } from '../timeline'
 import type { RecordedEvent } from '../api'
 
+// One hue per pipeline state — the same tokens the status pulse and event
+// inspector use, so color means the same thing everywhere.
 const COLORS: Record<SegmentKind, string> = {
-  listening: '#378add',
-  thinking: '#ef9f27',
-  tool: '#7f77dd',
-  speaking: '#639922',
+  listening: 'var(--c-listening)',
+  thinking: 'var(--c-thinking)',
+  tool: 'var(--c-tool)',
+  speaking: 'var(--c-speaking)',
 }
+
+const KINDS: SegmentKind[] = ['listening', 'thinking', 'tool', 'speaking']
 
 export function Timeline({ events }: { events: RecordedEvent[] }) {
   const tl = computeTurns(events)
-  if (tl.turns.length === 0) return <p className="muted">No turns to plot.</p>
+  if (tl.turns.length === 0) return <p className="transcript-empty">No turns to plot.</p>
   const span = Math.max(tl.end, 1)
   const pct = (v: number) => `${(v / span) * 100}%`
 
   return (
     <div className="timeline">
       <div className="timeline-legend">
-        <span style={{ color: COLORS.listening }}>■ listening</span>
-        <span style={{ color: COLORS.thinking }}>■ thinking</span>
-        <span style={{ color: COLORS.tool }}>■ tool</span>
-        <span style={{ color: COLORS.speaking }}>■ speaking</span>
-        <span style={{ color: '#a32d2d' }}>✕ cancelled</span>
+        {KINDS.map((kind) => (
+          <span key={kind} className="legend-chip">
+            <i style={{ background: COLORS[kind] }} />
+            {kind}
+          </span>
+        ))}
+        <span className="legend-chip legend-cancelled">
+          <span aria-hidden="true">✕</span> cancelled
+        </span>
       </div>
       {tl.turns.map((turn, i) => (
         <div key={turn.turnId} className="timeline-row">
@@ -42,7 +50,7 @@ export function Timeline({ events }: { events: RecordedEvent[] }) {
               />
             ))}
             {turn.cancelled && (
-              <div className="timeline-cancel" style={{ left: pct(turn.tEnd) }}>
+              <div className="timeline-cancel" style={{ left: pct(turn.tEnd) }} title="Turn cancelled">
                 ✕
               </div>
             )}
