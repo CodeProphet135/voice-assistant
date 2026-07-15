@@ -12,6 +12,7 @@ import contextlib
 import json
 import logging
 import re
+import time
 import uuid
 from collections import deque
 
@@ -92,6 +93,22 @@ _ECHO_THRESHOLD = 0.6
 # echo score is near zero. 1-word interims never barge.
 _TWO_WORD_BARGE_MAX_SCORE = 0.4
 
+# TTS audio sent to the browser is linear16 @ 24kHz mono (providers/
+# deepgram.py _TTS_SAMPLE_RATE), i.e. 48,000 PCM bytes per second of
+# playback. Used to estimate when the browser finishes playing what we've
+# sent (synthesis streams faster than real time, so playback outlives the
+# send loop and even tts_end).
+_TTS_BYTES_PER_SEC = 48_000
+
+# How long after estimated playback end an echo transcript can still arrive
+# (mic capture -> Deepgram -> transcript latency, incl. 300ms endpointing).
+# Past the playback horizon plus this tail, a transcript physically cannot
+# be echo, so the echo guard must stand down: users answering a question
+# like "do you mean X or Y?" naturally repeat the assistant's own words,
+# and live session 5ccbd307 showed the guard silently dropping every such
+# answer 30+ seconds after playback ended.
+_ECHO_GUARD_TAIL_S = 2.0
+
 # Echo-normalization regexes (see Session._echo_score). Separators (dashes/
 # slash) become a space so words either side don't fuse together; everything
 # else that isn't alphanumeric/space is just dropped.
@@ -149,8 +166,14 @@ class Session:
         # sentence), used by ``_is_echo`` to recognize our own TTS audio
         # leaking back into the mic. Never cleared on turn end -- echo
         # transcripts can arrive after tts_end too (playback + STT latency);
-        # the bounded length is the eviction policy.
+        # ``_echo_possible`` time-gates when this is consulted.
         self._spoken_recent: deque[str] = deque(maxlen=20)
+
+        # Estimated monotonic time when the browser finishes playing every
+        # TTS byte sent so far (see ``_note_tts_audio_sent``). Echo can only
+        # exist while audio is (or may still be) playing, so the echo guard
+        # is inert past this horizon plus ``_ECHO_GUARD_TAIL_S``.
+        self._playback_horizon = 0.0
 
         self._current_turn_id: uuid.UUID | None = None
         self._recorder = self._make_event_recorder()
@@ -235,6 +258,12 @@ class Session:
         """
         async with self._turn_lock:
             with _tracer.start_as_current_span("turn"):
+                # Echo can only come from THIS turn's TTS (or the tail after
+                # it ends, before the next turn starts) -- carrying prior
+                # turns' vocabulary forward let common words a much earlier
+                # answer happened to use ("are", "you", "sure", ...) make a
+                # genuine barge-in on unrelated content score as echo.
+                self._spoken_recent.clear()
                 self.input_items = truncate_history(self.input_items, MAX_INPUT_ITEMS)
                 self.input_items.append(
                     {
@@ -261,6 +290,7 @@ class Session:
                         with _tracer.start_as_current_span("tts.synthesize") as span:
                             span.set_attribute("sentence_index", index)
                             async for chunk in self.tts.synthesize(item):
+                                self._note_tts_audio_sent(len(chunk))
                                 await self.ws.send_bytes(chunk)
                         index += 1
                     await producer
@@ -338,6 +368,27 @@ class Session:
         rather than genuine user speech."""
         return self._echo_score(text) >= _ECHO_THRESHOLD
 
+    def _note_tts_audio_sent(self, num_bytes: int) -> None:
+        """Advance ``_playback_horizon`` by the playback duration of a TTS
+        chunk just sent. Playback is contiguous while the browser's buffer
+        is non-empty, so each chunk extends the current horizon; a fresh
+        burst after the buffer drained restarts the clock at now."""
+        now = time.monotonic()
+        self._playback_horizon = (
+            max(self._playback_horizon, now) + num_bytes / _TTS_BYTES_PER_SEC
+        )
+
+    def _echo_possible(self) -> bool:
+        """Whether our own TTS audio could still be coming back through the
+        mic right now -- i.e. whether ``_echo_score`` is worth consulting. A
+        turn in flight may be synthesizing more audio at any moment; after
+        that, echo can only arrive until buffered playback ends plus the
+        capture->transcript latency tail."""
+        return (
+            self._turn_active()
+            or time.monotonic() <= self._playback_horizon + _ECHO_GUARD_TAIL_S
+        )
+
     async def _barge_in(self) -> None:
         """Cancel the in-flight assistant turn because the user started
         speaking over it. ``_run_turn``'s cancel path (Task 2a) unwinds the
@@ -355,6 +406,10 @@ class Session:
             _logger.warning("Error awaiting cancelled turn during barge-in", exc_info=True)
         self._turn_task = None
         await self.emit(TtsCancelEvent())
+        # tts_cancel flushes the browser's playback buffer (player.ts), so
+        # any horizon accrued for still-buffered audio is void -- echo can
+        # only linger for the latency tail from this moment.
+        self._playback_horizon = time.monotonic()
         await self.emit(StateEvent(state="listening"))
         self._current_turn_id = None
 
@@ -387,6 +442,7 @@ class Session:
                         with _tracer.start_as_current_span("tts.synthesize") as span:
                             span.set_attribute("sentence_index", 0)
                             async for chunk in self.tts.synthesize(phrase):
+                                self._note_tts_audio_sent(len(chunk))
                                 await self.ws.send_bytes(chunk)
                         await self.emit(TtsEndEvent())
                         await self.emit(
@@ -413,26 +469,61 @@ class Session:
                     if not ev.is_final:
                         stripped = ev.text.strip()
                         if stripped:
-                            score = self._echo_score(stripped)
+                            # Past the playback window echo is physically
+                            # impossible -- don't let overlap with what we
+                            # said earlier (e.g. the user answering "do you
+                            # mean X or Y?" with "X") read as echo.
+                            score = (
+                                self._echo_score(stripped)
+                                if self._echo_possible()
+                                else 0.0
+                            )
+                            word_count = len(stripped.split())
                             if score >= _ECHO_THRESHOLD:
+                                # TEMP diagnostics for the open double-talk
+                                # barge-in investigation -- see
+                                # docs/barge-in-debug-prompt.md before removing.
+                                _logger.warning(
+                                    "BARGE DEBUG interim DROPPED-echo turn_active=%s "
+                                    "score=%.2f words=%d text=%r",
+                                    self._turn_active(), score, word_count, stripped,
+                                )
                                 # Our own TTS leaking into the mic -- drop it
                                 # entirely: no barge-in, and don't render it
                                 # as a live user bubble either.
                                 continue
-                            word_count = len(stripped.split())
-                            if self._turn_active() and (
+                            will_barge = self._turn_active() and (
                                 word_count >= _MIN_BARGE_IN_WORDS
                                 or (
                                     word_count == 2
                                     and score < _TWO_WORD_BARGE_MAX_SCORE
                                 )
-                            ):
+                            )
+                            _logger.warning(
+                                "BARGE DEBUG interim %s turn_active=%s score=%.2f "
+                                "words=%d text=%r",
+                                "BARGE" if will_barge else "shown-no-barge",
+                                self._turn_active(), score, word_count, stripped,
+                            )
+                            if will_barge:
                                 await self._barge_in()
                             await self.emit(SttPartialEvent(text=ev.text))
                         continue
 
-                    if ev.text.strip() and not self._is_echo(ev.text):
-                        self._stt_buffer.append(ev.text)
+                    final_stripped = ev.text.strip()
+                    if final_stripped:
+                        final_score = (
+                            self._echo_score(ev.text) if self._echo_possible() else 0.0
+                        )
+                        final_is_echo = final_score >= _ECHO_THRESHOLD
+                        _logger.warning(
+                            "BARGE DEBUG final turn_active=%s speech_final=%s "
+                            "is_echo=%s score=%.2f text=%r",
+                            self._turn_active(), ev.speech_final, final_is_echo,
+                            final_score, final_stripped,
+                        )
+                        if not final_is_echo:
+                            self._stt_buffer.append(ev.text)
 
                     if ev.speech_final:
                         await self._commit_stt_turn()
@@ -441,10 +532,16 @@ class Session:
                     # SPEAKING; emit only when no turn is active so recorded
                     # speech_started marks a genuine user-turn onset. Still a
                     # no-op for barge-in (interim transcripts own that).
-                    if not self._turn_active():
+                    if self._turn_active():
+                        _logger.warning("BARGE DEBUG speech_started (VAD) during active turn")
+                    else:
                         await self.emit(SpeechStartedEvent())
                 elif isinstance(ev, UtteranceEnd):
                     # Fallback turn-end signal when speech_final never fires.
+                    _logger.warning(
+                        "BARGE DEBUG utterance_end turn_active=%s buffer=%r",
+                        self._turn_active(), self._stt_buffer,
+                    )
                     await self._commit_stt_turn()
                 elif isinstance(ev, SttClosed):
                     # STT dropped and bounded reconnect was exhausted. Surface

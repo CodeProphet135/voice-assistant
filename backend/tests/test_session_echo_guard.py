@@ -11,6 +11,7 @@ make_text_turn for plain (non-gated) scripted turns.
 
 import asyncio
 import os
+import time
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
@@ -558,3 +559,153 @@ def test_echo_score_live_worked_examples() -> None:
     session._spoken_recent.append(_LIVE_SPOKEN_SENTENCE_2)
     assert session._echo_score("The fun") == 0.5
     assert session._echo_score("wait stop") == 0.0
+
+
+# --- 11. The guard stands down once playback is over ------------------------
+
+_DISAMBIGUATION_SENTENCE = (
+    "Do you mean association football, the game most people call soccer, "
+    "or American football?"
+)
+
+
+async def _complete_disambiguation_turn(
+    fake_ws: FakeWebSocket, session: Session, fake_stt: FakeSTTProvider
+) -> asyncio.Task:
+    """Boot the session and run one full (non-gated) turn whose reply is
+    ``_DISAMBIGUATION_SENTENCE``, driving until tts_end lands."""
+    fake_ws.queue_text('{"type": "start", "sample_rate": 16000}')
+    run_task = asyncio.create_task(session.run())
+    await _drive(3)
+
+    fake_stt.push(
+        Transcript(text="tell me about the rules of football", is_final=True, speech_final=True)
+    )
+    await _drive(40)
+    assert any(e["type"] == "tts_end" for e in fake_ws.sent)
+    assert not session._turn_active()
+    return run_task
+
+
+async def test_user_repeating_assistant_words_after_playback_commits() -> None:
+    """Regression (live session 5ccbd307): the assistant asked "Do you mean
+    association football ... or American football?"; every answer the user
+    gave ("Soccer", "I mean association football") naturally re-used the
+    assistant's own words, scored >= _ECHO_THRESHOLD, and was silently
+    dropped -- half a minute after playback ended, when echo is physically
+    impossible. Once the playback horizon (+ latency tail) has passed, the
+    echo guard must stand down and let the answer through."""
+    fake_ws = FakeWebSocket()
+    client = BargeInClient()
+    client.responses.script(make_text_turn(_DISAMBIGUATION_SENTENCE))
+    session, fake_stt, fake_tts = make_session(fake_ws, client)
+
+    run_task = await _complete_disambiguation_turn(fake_ws, session, fake_stt)
+
+    # Simulate real time passing: browser playback finished long ago.
+    session._playback_horizon = time.monotonic() - 60.0
+
+    client.responses.script(
+        [make_text_delta_event("Okay."), make_completed_event(output=[])]
+    )
+    fake_stt.push(
+        Transcript(text="I mean association football.", is_final=False, speech_final=False)
+    )
+    await _drive(20)
+    fake_stt.push(
+        Transcript(text="I mean association football.", is_final=True, speech_final=True)
+    )
+    await _drive(40)
+
+    assert {"type": "stt_partial", "text": "I mean association football."} in fake_ws.sent
+    stt_final_events = [e for e in fake_ws.sent if e["type"] == "stt_final"]
+    assert stt_final_events[-1] == {"type": "stt_final", "text": "I mean association football."}
+    assert len(stt_final_events) == 2, "the answer must commit as a fresh turn"
+
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+async def test_stale_spoken_recent_from_prior_turn_does_not_cause_false_echo() -> None:
+    """Regression (live double-talk repro): ``_spoken_recent`` used to
+    accumulate across turns (deque maxlen=20, never cleared), so common
+    words an EARLIER, unrelated turn happened to speak ("are", "you",
+    "sure") counted toward the echo score of a genuine barge-in during a
+    LATER turn that never said any of those words itself. That silently
+    dropped the interruption instead of barging. ``_spoken_recent`` must
+    reset at the start of each new turn."""
+    fake_ws = FakeWebSocket()
+    client = BargeInClient()
+    client.responses.script(
+        make_text_turn("Are you sure? Julius Caesar was a Roman general.")
+    )
+    session, fake_stt, fake_tts = make_session(fake_ws, client)
+
+    fake_ws.queue_text('{"type": "start", "sample_rate": 16000}')
+    run_task = asyncio.create_task(session.run())
+    await _drive(3)
+
+    fake_stt.push(
+        Transcript(text="tell me about Julius Caesar", is_final=True, speech_final=True)
+    )
+    await _drive(40)
+    assert any(e["type"] == "tts_end" for e in fake_ws.sent)
+
+    # A second, unrelated turn the user will interrupt -- gated so it stays
+    # "active" while the barge-in interim arrives.
+    release = asyncio.Event()
+    client.responses.script_gated(
+        [make_text_delta_event("The Roman Empire spanned three continents. ")],
+        release,
+        [make_text_delta_event("more "), make_completed_event(output=[])],
+    )
+    fake_stt.push(
+        Transcript(text="tell me about the Roman Empire", is_final=True, speech_final=True)
+    )
+    await _drive(40)
+    assert session._turn_active(), "expected the gated second turn to still be running"
+
+    # Shares words with turn 1's (now stale) speech but nothing turn 2
+    # actually said -- must barge, not be dropped as echo.
+    fake_stt.push(Transcript(text="Are you sure?", is_final=False, speech_final=False))
+    await _drive(20)
+
+    assert any(e["type"] == "tts_cancel" for e in fake_ws.sent), "expected the barge to fire"
+    partial_events = [e for e in fake_ws.sent if e["type"] == "stt_partial"]
+    assert {"type": "stt_partial", "text": "Are you sure?"} in partial_events
+
+    release.set()
+    await _drive(30)
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+async def test_echo_final_during_lingering_playback_after_turn_is_dropped() -> None:
+    """The flip side: the turn task is done but the browser is still draining
+    buffered audio (playback horizon in the future) -- an echo landing in
+    that window must still be dropped, exactly as before the time gate."""
+    fake_ws = FakeWebSocket()
+    client = BargeInClient()
+    client.responses.script(make_text_turn(_DISAMBIGUATION_SENTENCE))
+    session, fake_stt, fake_tts = make_session(fake_ws, client)
+
+    run_task = await _complete_disambiguation_turn(fake_ws, session, fake_stt)
+
+    # Browser still has ~30s of our audio buffered.
+    session._playback_horizon = time.monotonic() + 30.0
+    calls_before = len(client.responses.calls)
+    stt_final_count_before = len([e for e in fake_ws.sent if e["type"] == "stt_final"])
+
+    fake_stt.push(
+        Transcript(
+            text="the game most people call soccer", is_final=True, speech_final=True
+        )
+    )
+    await _drive(20)
+
+    stt_final_count_after = len([e for e in fake_ws.sent if e["type"] == "stt_final"])
+    assert stt_final_count_after == stt_final_count_before
+    assert len(client.responses.calls) == calls_before
+
+    fake_ws.queue_disconnect()
+    await run_task

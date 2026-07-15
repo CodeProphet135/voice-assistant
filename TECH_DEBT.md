@@ -13,10 +13,14 @@ history. Nothing here blocks running the app; fix opportunistically.
   user-message event, unlike voice turns (which emit `stt_final`). A fix
   would emit a recorded user-utterance event shaped like `stt_final` so the
   existing reducer picks it up — no new event type needed.
-- **Echo-detection buffer (`_spoken_recent`) never clears.** In a long
-  conversation, a genuine short user reply that closely matches something
-  the assistant said in roughly its last 20 sentences can be misclassified
-  as self-barge-in echo and silently dropped instead of committed.
+- **Echo guard can still eat a very fast overlapping reply.** The unbounded
+  version of this bug (genuine user speech dropped as echo long after
+  playback) is fixed — `_spoken_recent` clears per turn and the guard is
+  time-gated to the playback horizon + 2s tail
+  (`docs/bug-echo-guard-post-playback-drop.md`). Residual: an answer that
+  heavily reuses the assistant's words *within ~2s* of playback end can
+  still be misclassified; inherent to timing-based gating. The double-talk
+  barge-in case (H2/H3, `docs/barge-in-debug-prompt.md`) is still open.
 - **Minor lock-acquisition race in `_commit_stt_turn`.** On a same-tick
   `stop`, state can settle to `idle` instead of `listening`.
 - **Text-input path isn't under `_turn_lock`.** Only the STT-commit path is
