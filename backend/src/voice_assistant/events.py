@@ -29,6 +29,11 @@ from voice_assistant.models import Session as SessionRow
 _logger = logging.getLogger(__name__)
 _STOP = object()
 
+# Event types a connection produces just by existing, before the user has done
+# anything. They are recorded (replay needs them) but on their own they must
+# not trigger a write -- see _flush_loop.
+_CONNECT_ONLY_TYPES = frozenset({"ready"})
+
 
 @dataclass
 class EventMetadata:
@@ -96,18 +101,31 @@ class EventRecorder:
             self._title = text
 
     async def _flush_loop(self) -> None:
+        # Events recorded before the first substantive one are held here rather
+        # than written, because writing is what creates the sessions row: a
+        # connection that only ever greets (an idle page load, a reload without
+        # talking, StrictMode's dev double-connect) must leave no row behind.
+        # They are flushed alongside the substantive event that unblocks them,
+        # so a persisted stream still starts at seq 0 with `ready` intact.
+        held: list[RecordedEvent] = []
         while True:
             first = await self._queue.get()
             if first is _STOP:
                 return
             batch = [first]
+            stopping = False
             while not self._queue.empty():
                 item = self._queue.get_nowait()
                 if item is _STOP:
-                    await self._write_batch(batch)
-                    return
+                    stopping = True
+                    break
                 batch.append(item)
-            await self._write_batch(batch)
+            held.extend(batch)
+            if any(r.payload["type"] not in _CONNECT_ONLY_TYPES for r in held):
+                pending, held = held, []
+                await self._write_batch(pending)
+            if stopping:
+                return
 
     async def _write_batch(self, batch: list[RecordedEvent]) -> None:
         start_seq, end_seq = batch[0].metadata.seq, batch[-1].metadata.seq

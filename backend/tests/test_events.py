@@ -44,13 +44,31 @@ async def test_no_events_leaves_no_session_row(pg_db):
     assert row is None
 
 
-async def test_first_event_creates_row_and_stop_finalizes(pg_db):
-    # The complementary guarantee: once a real event is recorded, the row is
-    # created exactly once and stop() finalizes ended_at + title.
+async def test_ready_alone_leaves_no_session_row(pg_db):
+    # Every connection greets with `ready` before the user has done anything,
+    # so `ready` on its own must not create a row -- otherwise an idle reload
+    # (and StrictMode's dev double-connect) litters the sessions list.
     sid = uuid.uuid4()
     rec = EventRecorder(sid)
     await rec.start()
     rec.record(ReadyEvent(session_id=sid.hex), turn_id=None, trace_id=None, span_id=None)
+    await rec.stop()
+
+    async with db.async_session_factory() as s:
+        row = (
+            await s.execute(sa.select(SessionRow).where(SessionRow.id == sid))
+        ).scalar_one_or_none()
+    assert row is None
+
+
+async def test_first_event_creates_row_and_stop_finalizes(pg_db):
+    # The complementary guarantee: once a substantive event is recorded, the
+    # row is created exactly once and stop() finalizes ended_at + title.
+    sid = uuid.uuid4()
+    rec = EventRecorder(sid)
+    await rec.start()
+    rec.record(ReadyEvent(session_id=sid.hex), turn_id=None, trace_id=None, span_id=None)
+    rec.record(AssistantDeltaEvent(text="hi"), turn_id=None, trace_id=None, span_id=None)
     rec.note_title("hello there")
     await rec.stop()
 
@@ -128,7 +146,7 @@ async def test_batch_retries_transient_failure_then_succeeds(pg_db, monkeypatch)
     real_factory = db.async_session_factory
     monkeypatch.setattr(db, "async_session_factory", _FlakyFactory(real_factory, fail_times=1))
 
-    rec.record(ReadyEvent(session_id=sid.hex), turn_id=None, trace_id=None, span_id=None)
+    rec.record(AssistantDeltaEvent(text="hi"), turn_id=None, trace_id=None, span_id=None)
     await rec.stop()
 
     async with real_factory() as s:
@@ -156,9 +174,9 @@ async def test_recorder_disables_then_reenables_after_reprobe(pg_db, monkeypatch
     real_factory = db.async_session_factory
     monkeypatch.setattr(db, "async_session_factory", _FlakyFactory(real_factory, fail_times=2))
 
-    rec.record(ReadyEvent(session_id=sid.hex), turn_id=None, trace_id=None, span_id=None)
+    rec.record(AssistantDeltaEvent(text="a"), turn_id=None, trace_id=None, span_id=None)
     await asyncio.sleep(0.05)  # let _flush_loop drain batch 1 (seq 0) -> fails
-    rec.record(ReadyEvent(session_id=sid.hex), turn_id=None, trace_id=None, span_id=None)
+    rec.record(AssistantDeltaEvent(text="b"), turn_id=None, trace_id=None, span_id=None)
     await asyncio.sleep(0.05)  # let _flush_loop drain batch 2 (seq 1) -> fails, disables
 
     assert rec._enabled is False
@@ -175,7 +193,7 @@ async def test_recorder_disables_then_reenables_after_reprobe(pg_db, monkeypatch
 
     assert rec._enabled is True
 
-    rec.record(ReadyEvent(session_id=sid.hex), turn_id=None, trace_id=None, span_id=None)
+    rec.record(AssistantDeltaEvent(text="c"), turn_id=None, trace_id=None, span_id=None)
     await rec.stop()
 
     async with real_factory() as s:
