@@ -98,8 +98,7 @@ TTS/first-audio is a representative single-sentence figure. Re-measure with `scr
   leaks past `providers/`. Swap vendors by implementing two classes.
 - **Barge-in with a self-echo guard** — the mic stays open while speaking;
   genuine interims cancel the turn and flush audio, while the assistant's own
-  TTS leaking back through the mic is scored and dropped (see
-  `docs/bug-self-barge-in-echo.md`).
+  TTS leaking back through the mic is scored and dropped.
 - **Event sourcing** — every server→client event flows through one `emit()`
   seam; the frontend live UI is a pure reducer over that stream, so Phase 6
   Replay reuses the exact same reducer at recorded or scaled timing.

@@ -1,4 +1,4 @@
-"""Tests for the echo guard (fix option 2, docs/bug-self-barge-in-echo.md):
+"""Tests for the echo guard:
 transcripts that match what the assistant is currently/recently speaking are
 our own TTS audio leaking back into the mic, not genuine user speech, and
 must be dropped instead of barging in or committing as a user turn.

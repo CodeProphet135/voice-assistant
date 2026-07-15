@@ -99,8 +99,8 @@ async def _start_and_commit_gated_turn(
 
 async def test_speech_started_during_active_turn_does_not_barge_in() -> None:
     """Deepgram's VAD fires on any noise, including our own TTS echoing back
-    through the mic (docs/bug-self-barge-in-echo.md) -- SpeechStarted alone
-    must no longer cancel an in-flight turn."""
+    through the mic -- SpeechStarted alone must no longer cancel an
+    in-flight turn."""
     fake_ws = FakeWebSocket()
     client = BargeInClient()
     release = asyncio.Event()

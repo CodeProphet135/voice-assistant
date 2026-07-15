@@ -16,11 +16,22 @@ history. Nothing here blocks running the app; fix opportunistically.
 - **Echo guard can still eat a very fast overlapping reply.** The unbounded
   version of this bug (genuine user speech dropped as echo long after
   playback) is fixed — `_spoken_recent` clears per turn and the guard is
-  time-gated to the playback horizon + 2s tail
-  (`docs/bug-echo-guard-post-playback-drop.md`). Residual: an answer that
-  heavily reuses the assistant's words *within ~2s* of playback end can
-  still be misclassified; inherent to timing-based gating. The double-talk
-  barge-in case (H2/H3, `docs/barge-in-debug-prompt.md`) is still open.
+  time-gated to the playback horizon + 2s tail (commit `9000460`; the full
+  incident write-ups were removed from `docs/` but live in git history at
+  that commit). Residual: an answer that heavily reuses the assistant's
+  words *within ~2s* of playback end can still be misclassified; inherent
+  to timing-based gating.
+- **Double-talk barge-in is still open.** Interrupting *while* the
+  assistant is speaking can fail: the mic picks up TTS echo mixed with the
+  user's voice, so either the blended transcript scores as echo and our
+  guard drops it (H2 — fix in our scoring, e.g. barge on novel words) or
+  the browser's echo canceller suppresses the user's voice before Deepgram
+  ever hears it (H3 — acoustic fix, e.g. duck playback). Temporary
+  `BARGE DEBUG` warning logs in `_consume_stt` (session.py) distinguish the
+  two from a live repro: `DROPPED-echo` lines carrying the user's words ⇒
+  H2; VAD lines with no transcript of the user ⇒ H3. Keep the logging until
+  diagnosed; the full handoff doc is in git history at `9000460`
+  (`docs/barge-in-debug-prompt.md`).
 - **Minor lock-acquisition race in `_commit_stt_turn`.** On a same-tick
   `stop`, state can settle to `idle` instead of `listening`.
 - **Text-input path isn't under `_turn_lock`.** Only the STT-commit path is

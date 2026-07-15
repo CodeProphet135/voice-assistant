@@ -248,9 +248,8 @@ It does this by scoring each interim transcript against
 | 1 word | — | never barges (too little signal either way) |
 
 (The 2-word tier and its `0.4` cutoff exist because live testing showed
-Deepgram can jump straight from a 2-word interim to a final — see
-[`docs/bug-self-barge-in-echo.md`](bug-self-barge-in-echo.md) for the
-incident that produced these exact numbers.)
+Deepgram can jump straight from a 2-word interim to a final — a real
+incident produced these exact numbers.)
 
 ### Concrete example: an echo that's correctly ignored, then a real interrupt
 
@@ -597,8 +596,6 @@ subset to draw the per-turn Gantt bars.
   design-decision rationale.
 - [TECH_DEBT.md](../TECH_DEBT.md) — known gaps, so you don't "discover" and
   re-report something already tracked.
-- [docs/bug-self-barge-in-echo.md](bug-self-barge-in-echo.md) — a real
-  incident write-up behind the echo-guard code in `session.py`.
 - [CLAUDE.md](../CLAUDE.md) — the non-negotiable conventions (API shapes,
   model config, why certain things are sync vs async) — read before making
   an architectural change, not after.

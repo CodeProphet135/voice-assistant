@@ -72,8 +72,7 @@ _TURN_END = object()
 MAX_INPUT_ITEMS = 40
 
 # An interim transcript with at least this many words barges in on an active
-# turn whenever it isn't classified as echo (see
-# docs/bug-self-barge-in-echo.md). Three, not two: live echo runs showed
+# turn whenever it isn't classified as echo. Three, not two: live echo runs showed
 # Deepgram mishears short echo fragments badly enough ("A fun" came back as
 # "The fun") that the echo threshold alone can't screen them.
 _MIN_BARGE_IN_WORDS = 3
@@ -327,9 +326,8 @@ class Session:
 
     def _echo_score(self, text: str) -> float:
         """Match strength of ``text`` (an STT transcript) against what the
-        assistant recently spoke (see docs/bug-self-barge-in-echo.md): 1.0
-        on a substring hit, otherwise the fuzzy word-overlap ratio, 0.0 when
-        there is nothing to compare."""
+        assistant recently spoke: 1.0 on a substring hit, otherwise the
+        fuzzy word-overlap ratio, 0.0 when there is nothing to compare."""
         if not self._spoken_recent:
             return 0.0
         normalized = _normalize_for_echo(text)
@@ -481,8 +479,8 @@ class Session:
                             word_count = len(stripped.split())
                             if score >= _ECHO_THRESHOLD:
                                 # TEMP diagnostics for the open double-talk
-                                # barge-in investigation -- see
-                                # docs/barge-in-debug-prompt.md before removing.
+                                # barge-in investigation (see TECH_DEBT.md);
+                                # keep until it's diagnosed from a live repro.
                                 _logger.warning(
                                     "BARGE DEBUG interim DROPPED-echo turn_active=%s "
                                     "score=%.2f words=%d text=%r",
