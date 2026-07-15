@@ -29,6 +29,7 @@ from voice_assistant.config import settings
 from voice_assistant.events import EventRecorder
 from voice_assistant.protocol import (
     ErrorEvent,
+    PlaybackFinishedEvent,
     ReadyEvent,
     SpeechStartedEvent,
     StartEvent,
@@ -99,14 +100,27 @@ _TWO_WORD_BARGE_MAX_SCORE = 0.4
 # send loop and even tts_end).
 _TTS_BYTES_PER_SEC = 48_000
 
-# How long after estimated playback end an echo transcript can still arrive
-# (mic capture -> Deepgram -> transcript latency, incl. 300ms endpointing).
-# Past the playback horizon plus this tail, a transcript physically cannot
-# be echo, so the echo guard must stand down: users answering a question
-# like "do you mean X or Y?" naturally repeat the assistant's own words,
-# and live session 5ccbd307 showed the guard silently dropping every such
-# answer 30+ seconds after playback ended.
+# How long after playback end an echo transcript can still arrive. Past the
+# playback horizon plus this tail, a transcript physically cannot be echo, so
+# the echo guard must stand down: users answering a question like "do you
+# mean X or Y?" naturally repeat the assistant's own words, and live session
+# 5ccbd307 showed the guard silently dropping every such answer 30+ seconds
+# after playback ended. Two tiers, depending on how the horizon was set:
+#
+# - Fallback (``_ECHO_GUARD_TAIL_S``): the horizon is a server-side ESTIMATE
+#   (bytes / 48kB/s accrued at send time), so the tail must absorb estimate
+#   error (client receive/scheduling delay) on top of the mic-capture ->
+#   Deepgram -> transcript latency.
+# - Confirmed (``_ECHO_GUARD_CONFIRMED_TAIL_S``): the browser reported actual
+#   playback end (``playback_finished``), so only the capture->transcript
+#   pipeline remains: worklet framing (30ms) + WS transit + Deepgram
+#   endpointing (300ms) + finalization. Live E2E measurement (harness
+#   streaming real speech to the live backend) put the FINAL transcript of
+#   trailing audio ~0.5s after that audio's last mic frame; 1.0s is that
+#   worst case with ~2x margin. Echo of the last-played audio genuinely
+#   arrives after playback ends, so this cannot be zero.
 _ECHO_GUARD_TAIL_S = 2.0
+_ECHO_GUARD_CONFIRMED_TAIL_S = 1.0
 
 # Echo-normalization regexes (see Session._echo_score). Separators (dashes/
 # slash) become a space so words either side don't fuse together; everything
@@ -171,8 +185,16 @@ class Session:
         # Estimated monotonic time when the browser finishes playing every
         # TTS byte sent so far (see ``_note_tts_audio_sent``). Echo can only
         # exist while audio is (or may still be) playing, so the echo guard
-        # is inert past this horizon plus ``_ECHO_GUARD_TAIL_S``.
+        # is inert past this horizon plus the applicable tail. The estimate
+        # governs until the browser confirms actual playback end with a
+        # ``playback_finished`` frame (``_handle_playback_finished``), which
+        # re-anchors the horizon and arms the shorter confirmed tail.
         self._playback_horizon = 0.0
+        self._playback_end_confirmed = False
+        # Total binary TTS bytes sent this connection, mirrored by the
+        # client's received-bytes counter -- used to detect stale
+        # ``playback_finished`` frames (drain reports racing newer audio).
+        self._tts_bytes_sent = 0
 
         self._current_turn_id: uuid.UUID | None = None
         self._recorder = self._make_event_recorder()
@@ -370,22 +392,54 @@ class Session:
         """Advance ``_playback_horizon`` by the playback duration of a TTS
         chunk just sent. Playback is contiguous while the browser's buffer
         is non-empty, so each chunk extends the current horizon; a fresh
-        burst after the buffer drained restarts the clock at now."""
+        burst after the buffer drained restarts the clock at now. Any new
+        audio also invalidates a previously confirmed playback end -- the
+        estimate (+ its wider tail) governs again until the browser reports
+        this audio's drain."""
         now = time.monotonic()
         self._playback_horizon = (
             max(self._playback_horizon, now) + num_bytes / _TTS_BYTES_PER_SEC
         )
+        self._playback_end_confirmed = False
+        self._tts_bytes_sent += num_bytes
+
+    def _handle_playback_finished(self, event: PlaybackFinishedEvent) -> None:
+        """The browser reports its playback buffer drained: every TTS byte it
+        received has finished playing (or was flushed). Re-anchor the echo
+        guard to this ACTUAL playback end and arm the shorter confirmed tail.
+
+        Two safety properties, so a buggy/malicious/stale client frame can
+        never suppress genuine user speech:
+        - A frame acknowledging fewer bytes than we've sent is stale (audio
+          still in flight -- e.g. a drain report racing the next turn's
+          audio) and is ignored outright.
+        - The horizon may move up to ``now`` (actual end can lag the
+          estimate by network/scheduling delay) but never so far that the
+          confirmed window (horizon + confirmed tail) outlives the fallback
+          window (estimate + fallback tail) -- the signal only ever shortens
+          the guard."""
+        if event.received_bytes < self._tts_bytes_sent:
+            return
+        self._playback_horizon = min(
+            time.monotonic(),
+            self._playback_horizon + (_ECHO_GUARD_TAIL_S - _ECHO_GUARD_CONFIRMED_TAIL_S),
+        )
+        self._playback_end_confirmed = True
 
     def _echo_possible(self) -> bool:
         """Whether our own TTS audio could still be coming back through the
         mic right now -- i.e. whether ``_echo_score`` is worth consulting. A
         turn in flight may be synthesizing more audio at any moment; after
         that, echo can only arrive until buffered playback ends plus the
-        capture->transcript latency tail."""
-        return (
-            self._turn_active()
-            or time.monotonic() <= self._playback_horizon + _ECHO_GUARD_TAIL_S
+        capture->transcript latency tail (the short one when the browser
+        confirmed actual playback end, the wider one while the horizon is
+        only a server-side estimate)."""
+        tail = (
+            _ECHO_GUARD_CONFIRMED_TAIL_S
+            if self._playback_end_confirmed
+            else _ECHO_GUARD_TAIL_S
         )
+        return self._turn_active() or time.monotonic() <= self._playback_horizon + tail
 
     async def _barge_in(self) -> None:
         """Cancel the in-flight assistant turn because the user started
@@ -406,8 +460,12 @@ class Session:
         await self.emit(TtsCancelEvent())
         # tts_cancel flushes the browser's playback buffer (player.ts), so
         # any horizon accrued for still-buffered audio is void -- echo can
-        # only linger for the latency tail from this moment.
+        # only linger for the latency tail from this moment. This reset is
+        # itself an estimate (the flush happens when the client processes
+        # tts_cancel), so drop any earlier confirmation; the flush fires the
+        # client's drain report, which re-confirms moments later.
         self._playback_horizon = time.monotonic()
+        self._playback_end_confirmed = False
         await self.emit(StateEvent(state="listening"))
         self._current_turn_id = None
 
@@ -637,6 +695,8 @@ class Session:
         elif isinstance(event, StopEvent):
             await self._stop_stt()
             await self.emit(StateEvent(state="idle"))
+        elif isinstance(event, PlaybackFinishedEvent):
+            self._handle_playback_finished(event)
 
     async def run(self) -> None:
         """Main connection loop: greet, then dispatch incoming frames until

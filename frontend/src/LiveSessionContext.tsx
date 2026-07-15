@@ -34,6 +34,12 @@ export function LiveSessionProvider({ children }: { children: ReactNode }) {
   // client's late close/events (which can arrive after we've already swapped
   // in a new session) can't clobber the new connection's state.
   const makeClient = useCallback((player: AudioPlayer): VoiceAssistantClient => {
+    // Cumulative binary TTS bytes received on THIS connection, echoed back in
+    // playback_finished so the backend can spot a drain report that predates
+    // audio still in flight. Scoped per client, not per player: the player
+    // outlives connections (newSession reuses it), while the backend's sent
+    // counter starts at zero per session.
+    let ttsBytesReceived = 0
     const c = new VoiceAssistantClient({
       onEvent: (event) => {
         if (clientRef.current !== c) return
@@ -47,9 +53,18 @@ export function LiveSessionProvider({ children }: { children: ReactNode }) {
       },
       onAudio: (audio) => {
         if (clientRef.current !== c) return
+        ttsBytesReceived += audio.byteLength
         player.enqueue(audio)
       },
     })
+    // Rebind the shared player's drain signal to this connection: actual
+    // playback end anchors the backend's echo guard (a client->server control
+    // message only — not a server event, so it never touches the reducer or
+    // the recorded event stream).
+    player.onDrained = () => {
+      if (clientRef.current !== c) return
+      c.send({ type: 'playback_finished', received_bytes: ttsBytesReceived })
+    }
     clientRef.current = c
     setClient(c)
     c.connect()

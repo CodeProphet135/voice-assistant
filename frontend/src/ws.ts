@@ -11,6 +11,12 @@ export type ClientEvent =
   | { type: 'start'; sample_rate: number }
   | { type: 'stop' }
   | { type: 'text_input'; text: string }
+  // The audio player's buffer drained: every TTS byte received so far
+  // finished playing (or was flushed by tts_cancel). `received_bytes` is the
+  // cumulative binary TTS byte count on this connection — the backend uses
+  // it to ignore drain reports that predate audio still in flight, so the
+  // signal can only ever SHORTEN its echo-guard window.
+  | { type: 'playback_finished'; received_bytes: number }
 
 /** Pipeline state broadcast by the server. */
 export type PipelineState = 'idle' | 'listening' | 'thinking' | 'speaking'

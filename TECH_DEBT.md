@@ -13,14 +13,22 @@ history. Nothing here blocks running the app; fix opportunistically.
   user-message event, unlike voice turns (which emit `stt_final`). A fix
   would emit a recorded user-utterance event shaped like `stt_final` so the
   existing reducer picks it up — no new event type needed.
-- **Echo guard can still eat a very fast overlapping reply.** The unbounded
-  version of this bug (genuine user speech dropped as echo long after
-  playback) is fixed — `_spoken_recent` clears per turn and the guard is
-  time-gated to the playback horizon + 2s tail (commit `9000460`; the full
-  incident write-ups were removed from `docs/` but live in git history at
-  that commit). Residual: an answer that heavily reuses the assistant's
-  words *within ~2s* of playback end can still be misclassified; inherent
-  to timing-based gating.
+- **Echo guard can still eat a very fast overlapping reply — window now
+  ~1s of actual playback end.** The unbounded version of this bug (genuine
+  user speech dropped as echo long after playback) is fixed — `_spoken_recent`
+  clears per turn and the guard is time-gated to the playback horizon + tail
+  (commit `9000460`; the full incident write-ups were removed from `docs/`
+  but live in git history at that commit). The browser now reports actual
+  playback end (`playback_finished` client frame, sent by `player.ts` when
+  its buffer drains), which collapses the horizon to the real moment and
+  arms a 1.0s confirmed tail (live-measured capture→final-transcript latency
+  is ~0.5s incl. Deepgram's 300ms endpointing; 1.0s is ~2× that). The 2.0s
+  tail on the server-side byte-count estimate remains as fallback when the
+  signal is lost/stalled, and the signal can only ever shorten the window,
+  never extend it. Residual: an answer that heavily reuses the assistant's
+  words *within ~1s* of playback end can still be misclassified; inherent
+  to timing-based gating — closing it fully needs content-aware scoring
+  (e.g. barge on novel words), same direction as the double-talk item below.
 - **Double-talk barge-in is still open.** Interrupting *while* the
   assistant is speaking can fail: the mic picks up TTS echo mixed with the
   user's voice, so either the blended transcript scores as echo and our

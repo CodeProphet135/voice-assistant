@@ -27,6 +27,17 @@ export class AudioPlayer {
   private readonly sources = new Set<AudioBufferSourceNode>()
   private leftoverByte: number | null = null
 
+  /**
+   * Fired whenever the playback buffer drains: the last scheduled source
+   * finished playing, or flush() discarded everything. The live session uses
+   * this to report ACTUAL playback end to the backend (`playback_finished`),
+   * so the echo guard can stand down on real timing instead of holding its
+   * wider server-side-estimate window. Gapless back-to-back chunks never
+   * fire it spuriously — the next chunk's source is already tracked before
+   * the previous one ends.
+   */
+  onDrained: (() => void) | null = null
+
   /** Lazily creates (or resumes) the AudioContext. Safe to call repeatedly. */
   private ensureContext(): AudioContext {
     if (!this.context) {
@@ -80,7 +91,11 @@ export class AudioPlayer {
     source.buffer = buffer
     source.connect(ctx.destination)
     source.onended = () => {
-      this.sources.delete(source)
+      // flush() already emptied the set (and reported the drain itself), so
+      // a stopped source's late onended must not double-fire onDrained —
+      // only a source still tracked here can be the last one playing.
+      if (!this.sources.delete(source)) return
+      if (this.sources.size === 0) this.onDrained?.()
     }
 
     const startAt = Math.max(this.nextStartTime, ctx.currentTime)
@@ -102,6 +117,9 @@ export class AudioPlayer {
     this.nextStartTime = 0
     // A cancelled turn's trailing half-sample must not bleed into the next turn.
     this.leftoverByte = null
+    // Discarding buffered audio ends playback just as surely as playing it
+    // out — report the drain so the echo guard can stand down.
+    this.onDrained?.()
   }
 
   /** Flushes and tears down the AudioContext. Idempotent. */

@@ -41,8 +41,22 @@ class TextInputEvent(BaseModel):
     text: str
 
 
+class PlaybackFinishedEvent(BaseModel):
+    """The browser's audio player drained its queue: every TTS byte it has
+    received so far finished playing (or was discarded by a ``tts_cancel``
+    flush). Anchors the echo guard to ACTUAL playback end instead of the
+    server-side estimate. ``received_bytes`` is the client's cumulative count
+    of binary TTS bytes received on this connection; the server ignores the
+    signal when it has sent more than that (audio still in flight, e.g. a
+    drain report racing the next turn's audio), so a stale — or malicious —
+    frame can only ever shorten the echo-guard window, never extend it."""
+
+    type: Literal["playback_finished"] = "playback_finished"
+    received_bytes: int = 0
+
+
 ClientEvent = Annotated[
-    StartEvent | StopEvent | TextInputEvent,
+    StartEvent | StopEvent | TextInputEvent | PlaybackFinishedEvent,
     Field(discriminator="type"),
 ]
 

@@ -10,17 +10,25 @@ make_text_turn for plain (non-gated) scripted turns.
 """
 
 import asyncio
+import json
 import os
 import time
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
+import pytest
 from conftest import FakeWebSocket, make_completed_event, make_text_delta_event, make_text_turn
 from test_session_barge_in import BargeInClient, _drive, make_session
 from test_session_stt import FakeSTTProvider
 
+from voice_assistant.protocol import PlaybackFinishedEvent
 from voice_assistant.providers.base import Transcript
-from voice_assistant.session import Session, _normalize_for_echo
+from voice_assistant.session import (
+    _ECHO_GUARD_CONFIRMED_TAIL_S,
+    _ECHO_GUARD_TAIL_S,
+    Session,
+    _normalize_for_echo,
+)
 
 # The sentence the gated turn "speaks" before freezing -- a complete sentence
 # (terminal punctuation + trailing space) so the chunker flushes it to the
@@ -706,6 +714,178 @@ async def test_echo_final_during_lingering_playback_after_turn_is_dropped() -> N
     stt_final_count_after = len([e for e in fake_ws.sent if e["type"] == "stt_final"])
     assert stt_final_count_after == stt_final_count_before
     assert len(client.responses.calls) == calls_before
+
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+# --- 12. playback_finished anchors the guard to ACTUAL playback end ---------
+#
+# The browser reports its audio buffer draining (playback_finished, carrying
+# the cumulative TTS byte count it has received). The horizon collapses to
+# that real moment and the short _ECHO_GUARD_CONFIRMED_TAIL_S arms -- but the
+# signal may only ever SHORTEN the guard window (a stale or malicious frame
+# must never suppress genuine user speech).
+
+
+def _queue_playback_finished(fake_ws: FakeWebSocket, received_bytes: int) -> None:
+    fake_ws.queue_text(
+        json.dumps({"type": "playback_finished", "received_bytes": received_bytes})
+    )
+
+
+async def test_playback_finished_collapses_horizon_and_fast_reply_commits() -> None:
+    """The residual misclassification window this feature removes: the
+    server-side horizon over-estimates (deep browser buffer), the user answers
+    quickly reusing the assistant's words, and the fallback 2s tail would
+    still classify the answer as echo. With the browser's actual-playback-end
+    report the guard stands down after the short confirmed tail instead."""
+    fake_ws = FakeWebSocket()
+    client = BargeInClient()
+    client.responses.script(make_text_turn(_DISAMBIGUATION_SENTENCE))
+    session, fake_stt, fake_tts = make_session(fake_ws, client)
+
+    run_task = await _complete_disambiguation_turn(fake_ws, session, fake_stt)
+
+    # Server-side estimate says the browser is still draining buffered audio.
+    session._playback_horizon = time.monotonic() + 30.0
+
+    # The browser reports the buffer actually drained (all sent bytes played).
+    _queue_playback_finished(fake_ws, session._tts_bytes_sent)
+    await _drive(5)
+
+    assert session._playback_end_confirmed is True
+    assert session._playback_horizon <= time.monotonic(), (
+        "the horizon must collapse to the actual playback end"
+    )
+
+    # Simulate the user answering 1.2s after actual playback end: past the
+    # confirmed tail (guard down), yet still well inside where the estimate
+    # plus fallback tail had the guard up -- the old behavior dropped this.
+    session._playback_horizon = time.monotonic() - 1.2
+    assert _ECHO_GUARD_CONFIRMED_TAIL_S < 1.2 < _ECHO_GUARD_TAIL_S
+    assert not session._echo_possible()
+
+    client.responses.script(
+        [make_text_delta_event("Okay."), make_completed_event(output=[])]
+    )
+    fake_stt.push(
+        Transcript(text="I mean association football.", is_final=True, speech_final=True)
+    )
+    await _drive(40)
+
+    stt_final_events = [e for e in fake_ws.sent if e["type"] == "stt_final"]
+    assert stt_final_events[-1] == {"type": "stt_final", "text": "I mean association football."}
+    assert len(stt_final_events) == 2, "the fast overlapping answer must commit"
+
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+async def test_stale_playback_finished_acknowledging_fewer_bytes_is_ignored() -> None:
+    """A drain report that acknowledges fewer bytes than the server has sent
+    predates audio still in flight (e.g. the tts_cancel flush report racing
+    the next turn's audio) -- it must not collapse the horizon accrued for
+    that newer audio, and echo landing in the window must still be dropped."""
+    fake_ws = FakeWebSocket()
+    client = BargeInClient()
+    client.responses.script(make_text_turn(_DISAMBIGUATION_SENTENCE))
+    session, fake_stt, fake_tts = make_session(fake_ws, client)
+
+    run_task = await _complete_disambiguation_turn(fake_ws, session, fake_stt)
+
+    horizon_before = time.monotonic() + 30.0
+    session._playback_horizon = horizon_before
+
+    _queue_playback_finished(fake_ws, session._tts_bytes_sent - 1)
+    await _drive(5)
+
+    assert session._playback_end_confirmed is False
+    assert session._playback_horizon == horizon_before, (
+        "a stale drain report must not move the horizon"
+    )
+
+    calls_before = len(client.responses.calls)
+    stt_final_count_before = len([e for e in fake_ws.sent if e["type"] == "stt_final"])
+    fake_stt.push(
+        Transcript(text="the game most people call soccer", is_final=True, speech_final=True)
+    )
+    await _drive(20)
+
+    assert len([e for e in fake_ws.sent if e["type"] == "stt_final"]) == stt_final_count_before
+    assert len(client.responses.calls) == calls_before
+
+    fake_ws.queue_disconnect()
+    await run_task
+
+
+def test_playback_finished_never_extends_the_guard_window() -> None:
+    """Direct clamp check: however late the (well-formed) drain report lands,
+    the confirmed window (horizon + confirmed tail) must never outlive the
+    fallback window the estimate had already established (horizon + fallback
+    tail) -- the client can shorten the guard, never lengthen it."""
+    session = _bare_session()
+    session._tts_bytes_sent = 100
+
+    # Report arrives long after the estimated horizon passed: the horizon may
+    # advance at most to (old horizon + tail difference), so the confirmed
+    # window ends exactly where the fallback window already did.
+    old_horizon = time.monotonic() - 10.0
+    session._playback_horizon = old_horizon
+    session._handle_playback_finished(PlaybackFinishedEvent(received_bytes=100))
+    assert session._playback_end_confirmed is True
+    assert session._playback_horizon + _ECHO_GUARD_CONFIRMED_TAIL_S == pytest.approx(
+        old_horizon + _ECHO_GUARD_TAIL_S
+    )
+    assert not session._echo_possible(), "an already-expired guard must stay down"
+
+    # Report arrives while the estimate is still in the future: the horizon
+    # collapses to now (never past it), shortening the window.
+    future_horizon = time.monotonic() + 30.0
+    session._playback_horizon = future_horizon
+    session._handle_playback_finished(PlaybackFinishedEvent(received_bytes=100))
+    assert session._playback_horizon <= time.monotonic()
+    assert (
+        session._playback_horizon + _ECHO_GUARD_CONFIRMED_TAIL_S
+        < future_horizon + _ECHO_GUARD_TAIL_S
+    )
+
+
+async def test_playback_finished_during_active_turn_does_not_break_echo_guard() -> None:
+    """A drain report landing mid-turn (the buffer can genuinely run dry
+    between sentences while the agent is still generating) must not disable
+    the echo guard: the turn being active keeps it up regardless, and the
+    next TTS bytes re-arm the estimate + fallback tail."""
+    fake_ws = FakeWebSocket()
+    release = asyncio.Event()
+    session, fake_stt, fake_tts, client = _make_gated_session(fake_ws, release)
+
+    run_task = await _start_turn_with_spoken_sentence(fake_ws, session, fake_stt, release)
+
+    # The browser drained the first sentence's audio while the agent stream
+    # is still frozen mid-turn.
+    _queue_playback_finished(fake_ws, session._tts_bytes_sent)
+    await _drive(5)
+    assert session._playback_end_confirmed is True
+    assert session._turn_active()
+    assert session._echo_possible(), "an active turn keeps the guard up"
+
+    # Echo of the already-spoken sentence still arrives -- must stay dropped.
+    fake_stt.push(
+        Transcript(text="here is a fun fact about rome", is_final=False, speech_final=False)
+    )
+    await _drive(20)
+    assert not any(e["type"] == "tts_cancel" for e in fake_ws.sent)
+    assert not any(e["type"] == "stt_partial" for e in fake_ws.sent)
+    assert session._turn_active()
+
+    # The turn resumes speaking: new audio invalidates the stale confirmation
+    # so the estimate (+ fallback tail) governs the new bytes.
+    bytes_before = session._tts_bytes_sent
+    release.set()
+    await _drive(30)
+    assert session._tts_bytes_sent > bytes_before
+    assert session._playback_end_confirmed is False
 
     fake_ws.queue_disconnect()
     await run_task
