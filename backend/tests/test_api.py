@@ -27,7 +27,7 @@ async def _seed(sid: uuid.UUID):
         s.add_all(
             [
                 Event(
-                    session_id=sid, seq=1, ts=datetime.now(UTC), turn_id=None,
+                    session_id=sid, seq=1, ts=datetime.now(UTC), turn_id=uuid.uuid4(),
                     trace_id=None, span_id=None, type="state",
                     payload={"type": "state", "state": "thinking"},
                 ),
@@ -69,10 +69,42 @@ async def test_list_sessions_newest_first(pg_db):
     async with db.async_session_factory() as s:
         s.add(SessionRow(id=old_id, title="old", started_at=now - timedelta(hours=1)))
         s.add(SessionRow(id=new_id, title="new", started_at=now))
+        await s.flush()
+        s.add_all(
+            [
+                Event(
+                    session_id=old_id, seq=0, ts=datetime.now(UTC), turn_id=uuid.uuid4(),
+                    trace_id=None, span_id=None, type="state",
+                    payload={"type": "state", "state": "thinking"},
+                ),
+                Event(
+                    session_id=new_id, seq=0, ts=datetime.now(UTC), turn_id=uuid.uuid4(),
+                    trace_id=None, span_id=None, type="state",
+                    payload={"type": "state", "state": "thinking"},
+                ),
+            ]
+        )
         await s.commit()
     out = await list_sessions()
     ids = [r.id for r in out]
     assert ids.index(new_id) < ids.index(old_id)
+
+
+async def test_list_sessions_excludes_turnless_sessions(pg_db):
+    sid = uuid.uuid4()
+    async with db.async_session_factory() as s:
+        s.add(SessionRow(id=sid, title="silent"))
+        await s.flush()
+        s.add(
+            Event(
+                session_id=sid, seq=0, ts=datetime.now(UTC), turn_id=None,
+                trace_id=None, span_id=None, type="ready",
+                payload={"type": "ready", "session_id": sid.hex},
+            )
+        )
+        await s.commit()
+    out = await list_sessions()
+    assert all(row.id != sid for row in out)
 
 
 async def test_endpoints_serialize_over_http(pg_db):

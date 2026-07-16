@@ -40,9 +40,16 @@ class EventOut(BaseModel):
 
 @router.get("/sessions", response_model=list[SessionSummary])
 async def list_sessions():
+    has_turns = (
+        sa.select(Event.session_id)
+        .where(Event.session_id == SessionRow.id, Event.turn_id.isnot(None))
+        .exists()
+    )
     async with db.async_session_factory() as s:
         rows = (
-            await s.execute(sa.select(SessionRow).order_by(SessionRow.started_at.desc()))
+            await s.execute(
+                sa.select(SessionRow).where(has_turns).order_by(SessionRow.started_at.desc())
+            )
         ).scalars().all()
     return rows
 
