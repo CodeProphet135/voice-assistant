@@ -35,6 +35,34 @@ export function Transcript({
 
   const empty = messages.length === 0 && !isThinking && !sttPartial
 
+  // Group tool chips by the message they chronologically follow, so each
+  // group renders inside its own turn rather than pooling at the bottom.
+  const toolsByAnchor = new Map<number, ToolActivity[]>()
+  for (const tool of toolActivity) {
+    const group = toolsByAnchor.get(tool.anchorIndex)
+    if (group) {
+      group.push(tool)
+    } else {
+      toolsByAnchor.set(tool.anchorIndex, [tool])
+    }
+  }
+
+  const renderTools = (anchorIndex: number) => {
+    const group = toolsByAnchor.get(anchorIndex)
+    if (!group) return null
+    return (
+      <div className="tool-activity">
+        {group.map((tool) => (
+          <span key={tool.call_id} className={`tool-chip tool-chip-${tool.status}`}>
+            <i className="tool-dot" />
+            {tool.name}
+            {tool.status === 'running' ? '…' : ' ✓'}
+          </span>
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div className="transcript" ref={scrollRef}>
       {empty &&
@@ -47,10 +75,14 @@ export function Transcript({
         ) : (
           <p className="transcript-empty">{emptyText}</p>
         ))}
+      {renderTools(-1)}
       {messages.map((message, index) => (
-        <div key={index} className={`bubble bubble-${message.role}`}>
-          <span className="sr-only">{message.role === 'user' ? 'You' : 'Assistant'}</span>
-          <p className="bubble-text">{message.text}</p>
+        <div key={index} className="turn-block">
+          <div className={`bubble bubble-${message.role}`}>
+            <span className="sr-only">{message.role === 'user' ? 'You' : 'Assistant'}</span>
+            <p className="bubble-text">{message.text}</p>
+          </div>
+          {renderTools(index)}
         </div>
       ))}
       {sttPartial && (
@@ -67,17 +99,6 @@ export function Transcript({
             <span className="dot" />
             <span className="dot" />
           </p>
-        </div>
-      )}
-      {toolActivity.length > 0 && (
-        <div className="tool-activity">
-          {toolActivity.map((tool) => (
-            <span key={tool.call_id} className={`tool-chip tool-chip-${tool.status}`}>
-              <i className="tool-dot" />
-              {tool.name}
-              {tool.status === 'running' ? '…' : ' ✓'}
-            </span>
-          ))}
         </div>
       )}
     </div>

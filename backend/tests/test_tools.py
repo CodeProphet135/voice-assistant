@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from voice_assistant.agent.tools.notes import list_notes, save_note
 from voice_assistant.agent.tools.registry import ToolContext
-from voice_assistant.agent.tools.timers import set_timer
+from voice_assistant.agent.tools.timers import cancel_timer, list_timers, set_timer
 from voice_assistant.agent.tools.weather import get_weather
 from voice_assistant.session import Session
 
@@ -123,8 +123,8 @@ async def test_set_timer_returns_immediately_and_schedules():
     out = await set_timer(ToolContext(session=session), seconds=300, label="tea")
     assert "5 minutes" in out
     assert len(session._timer_tasks) == 1
-    for task in list(session._timer_tasks.values()):
-        task.cancel()
+    for handle in list(session._timer_tasks.values()):
+        handle.task.cancel()
 
 
 async def test_set_timer_rejects_nonpositive():
@@ -141,6 +141,43 @@ async def test_timer_fires_and_speaks():
     assert any("tea" in phrase for phrase in tts.synthesized)
     assert ws.sent_bytes, "the timer should have streamed spoken audio"
     assert timer_id not in session._timer_tasks
+
+
+async def test_list_timers_empty():
+    session, _ws, _tts = _timer_session()
+    out = await list_timers(ToolContext(session=session))
+    assert "no timers" in out.lower()
+
+
+async def test_list_timers_reports_label_id_and_remaining():
+    session, _ws, _tts = _timer_session()
+    timer_id = session.schedule_timer(300, "tea")
+    session.schedule_timer(60, None)
+    out = await list_timers(ToolContext(session=session))
+    assert "'tea' timer" in out
+    assert timer_id in out
+    assert "5 minutes" in out
+    assert "unlabeled timer" in out
+    for handle in list(session._timer_tasks.values()):
+        handle.task.cancel()
+
+
+async def test_cancel_timer_cancels_and_removes():
+    session, ws, _tts = _timer_session()
+    timer_id = session.schedule_timer(300, "tea")
+    out = await cancel_timer(ToolContext(session=session), timer_id=timer_id)
+    assert "cancelled" in out.lower()
+    assert session._timer_tasks == {}
+    # The countdown task must actually stop: drive the loop and confirm the
+    # timer never fires (no timer_fired frame ever hits the socket).
+    await _drive()
+    assert not any(e["type"] == "timer_fired" for e in ws.sent)
+
+
+async def test_cancel_timer_unknown_id_is_graceful():
+    session, _ws, _tts = _timer_session()
+    out = await cancel_timer(ToolContext(session=session), timer_id="nope")
+    assert out.startswith("Error:")
 
 
 async def test_timers_cancelled_on_session_teardown():

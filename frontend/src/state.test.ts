@@ -43,6 +43,9 @@ describe('reducer', () => {
         arguments: '{"city":"Tokyo"}',
         output: 'sunny',
         status: 'done',
+        // Anchored to the user message (index 0) — the newest message when
+        // the tool_call arrived — so the transcript renders it in that turn.
+        anchorIndex: 0,
       },
     ])
   })
@@ -63,6 +66,20 @@ describe('reducer', () => {
     expect(populated.messages.length).toBeGreaterThan(0)
     const afterReset = reducer(populated, { type: 'reset' })
     expect(afterReset).toEqual(initialState)
+  })
+
+  it('anchors each tool call to the newest message at the time it ran', () => {
+    const script: Array<ServerEvent | { type: 'user_submit'; text: string }> = [
+      { type: 'stt_final', text: 'first question' },
+      { type: 'tool_call', call_id: 'c1', name: 'get_weather', arguments: '' },
+      { type: 'assistant_done', text: 'First answer.' },
+      { type: 'stt_final', text: 'second question' },
+      { type: 'tool_call', call_id: 'c2', name: 'set_timer', arguments: '' },
+    ]
+    const final = script.reduce((s, a) => reducer(s, a as never), initialState)
+    // c1 follows message 0 (first user message); c2 follows message 2
+    // (second user message) — each turn keeps its own chips.
+    expect(final.toolActivity.map((t) => t.anchorIndex)).toEqual([0, 2])
   })
 
   it('backfills tool arguments from tool_result when tool_call streamed empty args', () => {

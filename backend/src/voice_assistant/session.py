@@ -15,6 +15,7 @@ import re
 import time
 import uuid
 from collections import deque
+from dataclasses import dataclass
 
 from fastapi import WebSocket
 from opentelemetry import trace
@@ -66,6 +67,16 @@ _TOOLS: list[dict] = registry.definitions()
 # Sentinel pushed onto the TTS queue to signal the agent producer is done
 # (always enqueued last, even on error, so the drain loop always terminates).
 _TURN_END = object()
+
+
+@dataclass
+class _TimerHandle:
+    """A live countdown timer: the background task plus the metadata the
+    list_timers/cancel_timer tools need to describe and address it."""
+
+    task: asyncio.Task
+    label: str | None
+    deadline: float  # time.monotonic() when the timer fires
 
 # Cap on client-owned conversation history re-sent to OpenAI each turn. Oldest
 # whole turns past this are trimmed (agent/history.py); the system prompt rides
@@ -172,8 +183,9 @@ class Session:
         self._turn_task: asyncio.Task | None = None
 
         # Background countdown timers (set_timer tool), keyed by timer_id, so
-        # teardown can cancel any still pending and nothing leaks on disconnect.
-        self._timer_tasks: dict[str, asyncio.Task] = {}
+        # the timer tools can list/cancel them and teardown can cancel any
+        # still pending — nothing leaks on disconnect.
+        self._timer_tasks: dict[str, _TimerHandle] = {}
 
         # What the assistant has recently spoken (one entry per synthesized
         # sentence), used by ``_is_echo`` to recognize our own TTS audio
@@ -473,10 +485,33 @@ class Session:
         """Start a tracked countdown task and return its id. Called by the
         ``set_timer`` tool; the task fires ``_fire_timer`` when it elapses."""
         timer_id = uuid.uuid4().hex
-        self._timer_tasks[timer_id] = asyncio.create_task(
-            self._fire_timer(timer_id, seconds, label)
+        self._timer_tasks[timer_id] = _TimerHandle(
+            task=asyncio.create_task(self._fire_timer(timer_id, seconds, label)),
+            label=label,
+            deadline=time.monotonic() + seconds,
         )
         return timer_id
+
+    def list_timers(self) -> list[dict]:
+        """Snapshot of the still-pending timers for the ``list_timers`` tool:
+        ``{"timer_id", "label", "remaining_seconds"}`` per entry."""
+        now = time.monotonic()
+        return [
+            {
+                "timer_id": timer_id,
+                "label": handle.label,
+                "remaining_seconds": max(0, round(handle.deadline - now)),
+            }
+            for timer_id, handle in self._timer_tasks.items()
+        ]
+
+    def cancel_timer(self, timer_id: str) -> bool:
+        """Cancel a pending timer by id; False if no such timer is running."""
+        handle = self._timer_tasks.pop(timer_id, None)
+        if handle is None:
+            return False
+        handle.task.cancel()
+        return True
 
     async def _fire_timer(self, timer_id: str, seconds: int, label: str | None) -> None:
         """Wait out the timer, then emit ``timer_fired`` and speak a fixed
@@ -727,10 +762,10 @@ class Session:
         finally:
             # Cancel any pending countdown timers so a dropped socket can't
             # leave background tasks running (or trying to emit on a dead ws).
-            for task in list(self._timer_tasks.values()):
-                task.cancel()
+            for handle in list(self._timer_tasks.values()):
+                handle.task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+                    await handle.task
             self._timer_tasks.clear()
             # A dropped socket must not leak the STT task/connection.
             await self._stop_stt()

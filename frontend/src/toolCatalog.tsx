@@ -59,6 +59,16 @@ function TimerIcon({ className }: { className?: string }) {
   )
 }
 
+function TimerOffIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <circle cx="12" cy="13" r="8" />
+      <path d="M9 2h6" />
+      <path d="M9.5 10.5l5 5M14.5 10.5l-5 5" />
+    </svg>
+  )
+}
+
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     id: 'weather',
@@ -71,7 +81,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     id: 'save_note',
     name: 'Save a note',
     description: 'Save a short note to recall later.',
-    samplePrompt: 'Remind me to call the dentist tomorrow',
+    samplePrompt: 'Save a note: call the dentist',
     Icon: NoteIcon,
   },
   {
@@ -87,5 +97,12 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     description: 'Start a countdown timer.',
     samplePrompt: 'Set a timer for 10 minutes',
     Icon: TimerIcon,
+  },
+  {
+    id: 'manage_timers',
+    name: 'Manage timers',
+    description: 'Check or cancel running timers.',
+    samplePrompt: 'What timers do I have running?',
+    Icon: TimerOffIcon,
   },
 ]

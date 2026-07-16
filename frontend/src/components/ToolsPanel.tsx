@@ -1,9 +1,26 @@
+import { useEffect, useState } from 'react'
 import { TOOL_CATALOG } from '../toolCatalog'
 
 interface ToolsPanelProps {
   open: boolean
   onSelectPrompt: (text: string) => void
   onClose: () => void
+}
+
+// Must match the tools-panel breakpoint in index.css: below it the panel is a
+// slide-in drawer driven by `open`; above it the panel is always visible and
+// `open` is irrelevant.
+const DRAWER_QUERY = '(max-width: 960px)'
+
+function useIsDrawer(): boolean {
+  const [isDrawer, setIsDrawer] = useState(() => window.matchMedia(DRAWER_QUERY).matches)
+  useEffect(() => {
+    const mq = window.matchMedia(DRAWER_QUERY)
+    const onChange = (event: MediaQueryListEvent) => setIsDrawer(event.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return isDrawer
 }
 
 function CloseIcon() {
@@ -25,15 +42,19 @@ function CloseIcon() {
 }
 
 export function ToolsPanel({ open, onSelectPrompt, onClose }: ToolsPanelProps) {
+  // inert only applies while the panel is a CLOSED drawer (off-screen on
+  // narrow viewports). On wide viewports the panel is statically visible, so
+  // inert would silently disable every sample-prompt chip.
+  const isDrawer = useIsDrawer()
   return (
     <aside
       id="tools-panel"
       className={`tools-panel${open ? ' tools-panel-open' : ''}`}
       aria-label="Assistant capabilities"
-      inert={!open}
+      inert={isDrawer && !open}
     >
       <div className="tools-panel-header">
-        <h2>What I can do</h2>
+        <h2>Available Tools and Sample Prompts</h2>
         <button
           type="button"
           className="tools-panel-close"

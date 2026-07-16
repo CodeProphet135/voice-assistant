@@ -456,6 +456,15 @@ main.live {
   margin: -0.75rem 0 0;
 }
 
+/* One message plus the tool chips that ran right after it. A flex column so
+   the bubbles' align-self (user right / assistant left) keeps working now
+   that they're no longer direct children of .transcript. */
+.turn-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
 .bubble {
   max-width: 78%;
   padding: 0.65rem 1rem;
@@ -1112,7 +1121,9 @@ main.live {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
-  padding: 1.1rem 0 1.5rem;
+  /* Top padding matches .app-header's rendered height so the panel starts
+     below the header row instead of racing it to the top of .live-layout. */
+  padding: 4.1rem 0 1.5rem;
 }
 
 .tools-panel-header {

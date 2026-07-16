@@ -19,6 +19,13 @@ export interface ToolActivity {
   arguments: string
   output: string | null
   status: ToolActivityStatus
+  /**
+   * Index of the newest message when the tool_call arrived (-1 if none), i.e.
+   * the message this activity chronologically follows. The wire events carry
+   * no turn id, so this is how the transcript renders tool chips inside their
+   * turn instead of pooling them all at the bottom.
+   */
+  anchorIndex: number
 }
 
 export interface AppState {
@@ -135,6 +142,7 @@ export function reducer(state: AppState, action: Action): AppState {
         arguments: action.arguments,
         output: null,
         status: 'running',
+        anchorIndex: state.messages.length - 1,
       }
       return { ...state, toolActivity: [...state.toolActivity, entry] }
     }

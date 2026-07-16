@@ -1,9 +1,11 @@
-"""``set_timer`` — schedule a background asyncio timer on the session.
+"""Timer tools — ``set_timer``, ``list_timers``, ``cancel_timer``.
 
-The tool returns immediately with a spoken confirmation; the actual firing
-(emit ``timer_fired`` + speak a fixed phrase) is owned by
+``set_timer`` returns immediately with a spoken confirmation; the actual
+firing (emit ``timer_fired`` + speak a fixed phrase) is owned by
 ``Session.schedule_timer`` / ``Session._fire_timer`` so the timer task's
-lifecycle is tied to the connection (cancelled on teardown).
+lifecycle is tied to the connection (cancelled on teardown). ``list_timers``
+and ``cancel_timer`` read/cancel that same per-session registry; timer ids
+are session-scoped, so the model finds them via ``list_timers`` first.
 """
 
 from voice_assistant.agent.tools.registry import tool
@@ -44,3 +46,53 @@ async def set_timer(ctx, *, seconds: int, label: str | None = None) -> str:
     ctx.session.schedule_timer(seconds, label)
     tail = f" for {label}" if label else ""
     return f"Timer set{tail} for {_duration_phrase(seconds)}."
+
+
+@tool(
+    name="list_timers",
+    description=(
+        "List the currently running countdown timers, with each timer's id, "
+        "label, and remaining time. Use this to find a timer's id before "
+        "cancelling it with cancel_timer."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    },
+)
+async def list_timers(ctx) -> str:
+    timers = ctx.session.list_timers()
+    if not timers:
+        return "There are no timers running."
+    lines = []
+    for entry in timers:
+        name = f"'{entry['label']}' timer" if entry["label"] else "unlabeled timer"
+        remaining = _duration_phrase(entry["remaining_seconds"])
+        lines.append(f"{name} (id {entry['timer_id']}): {remaining} remaining")
+    return "Running timers:\n" + "\n".join(lines)
+
+
+@tool(
+    name="cancel_timer",
+    description=(
+        "Cancel a running countdown timer by its id. Call list_timers first "
+        "to find the id of the timer to cancel."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "timer_id": {
+                "type": "string",
+                "description": "Id of the timer to cancel, as reported by list_timers.",
+            },
+        },
+        "required": ["timer_id"],
+        "additionalProperties": False,
+    },
+)
+async def cancel_timer(ctx, *, timer_id: str) -> str:
+    if not ctx.session.cancel_timer(timer_id):
+        return "Error: no running timer with that id. Use list_timers to see the active timers."
+    return "Timer cancelled."
