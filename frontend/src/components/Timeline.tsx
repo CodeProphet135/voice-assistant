@@ -15,8 +15,14 @@ const KINDS: SegmentKind[] = ['listening', 'thinking', 'tool', 'speaking']
 export function Timeline({ events }: { events: RecordedEvent[] }) {
   const tl = computeTurns(events)
   if (tl.turns.length === 0) return <p className="transcript-empty">No turns to plot.</p>
-  const span = Math.max(tl.end, 1)
-  const pct = (v: number) => `${(v / span) * 100}%`
+  // Scale to the span of actual turn activity, not the whole recording — this
+  // trims idle time before the first turn and after the last one while still
+  // showing real gaps between turns.
+  const windowStart = Math.min(...tl.turns.map((t) => t.t0))
+  const windowEnd = Math.max(...tl.turns.map((t) => t.tEnd))
+  const span = Math.max(windowEnd - windowStart, 1)
+  const pct = (v: number) => `${((v - windowStart) / span) * 100}%`
+  const pctWidth = (v: number) => `${(v / span) * 100}%`
 
   return (
     <div className="timeline">
@@ -43,7 +49,7 @@ export function Timeline({ events }: { events: RecordedEvent[] }) {
                 className={`timeline-seg ${s.kind === 'tool' ? 'is-tool' : ''}`}
                 style={{
                   left: pct(s.start),
-                  width: pct(Math.max(s.end - s.start, 0)),
+                  width: pctWidth(Math.max(s.end - s.start, 0)),
                   background: COLORS[s.kind],
                 }}
                 title={`${s.kind} ${(s.end - s.start).toFixed(0)}ms`}
