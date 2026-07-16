@@ -81,7 +81,7 @@ export function LiveAssistant() {
               <button type="button" className="btn-ghost" onClick={newSession}>
                 New session
               </button>
-              <Link className="nav-link" to="/sessions">
+              <Link className="btn-ghost" to="/sessions">
                 Sessions
               </Link>
             </div>

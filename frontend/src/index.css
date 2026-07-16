@@ -165,10 +165,13 @@ main.live {
 }
 
 .btn-ghost {
+  display: inline-flex;
+  align-items: center;
   font: inherit;
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--text);
+  text-decoration: none;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 999px;
