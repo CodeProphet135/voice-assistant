@@ -14,6 +14,7 @@ export function SessionDetail() {
 
   useEffect(() => {
     if (!id) return
+    setError(null)
     fetchEvents(id)
       .then((evts) => {
         setEvents(evts)
