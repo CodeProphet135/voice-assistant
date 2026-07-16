@@ -66,7 +66,7 @@ export function LiveAssistant() {
       <div className="live-layout">
         <div className="live-shell">
           <header className="app-header">
-            <h1 className="brand">Voice Assistant</h1>
+            <h1 className="brand">Smart Voice Assistant</h1>
             <StatusBadge connectionStatus={connectionStatus} pipelineState={state.status} />
             <div className="header-actions">
               <button
