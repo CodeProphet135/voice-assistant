@@ -81,6 +81,11 @@ export function LiveAssistant() {
               <button type="button" className="btn-ghost" onClick={newSession}>
                 New session
               </button>
+              {state.sessionId && (
+                <Link className="btn-ghost" to={`/sessions/${state.sessionId}`}>
+                  View replay
+                </Link>
+              )}
               <Link className="btn-ghost" to="/sessions">
                 Sessions
               </Link>
