@@ -68,7 +68,9 @@ export function Transcript({
       {empty &&
         (hero ? (
           <div className="transcript-hero">
-            <Pulse hero state={status} />
+            <span className="hero-glow">
+              <Pulse hero state={status} />
+            </span>
             <p className="hero-title">Say something</p>
             <p className="hero-hint">Tap the mic to talk, or type a message below.</p>
           </div>

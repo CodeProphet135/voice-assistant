@@ -82,7 +82,7 @@ export function LiveAssistant() {
                 New session
               </button>
               {state.sessionId && state.messages.length > 0 && (
-                <Link className="btn-ghost" to={`/sessions/${state.sessionId}`}>
+                <Link className="btn-ghost btn-replay" to={`/sessions/${state.sessionId}`}>
                   View replay
                 </Link>
               )}

@@ -46,9 +46,20 @@ body {
   background:
     radial-gradient(
       1100px 520px at 65% -12%,
-      color-mix(in srgb, var(--accent) 10%, transparent),
+      color-mix(in srgb, var(--accent) 16%, transparent),
       transparent 70%
     ),
+    radial-gradient(
+      900px 480px at 6% 18%,
+      color-mix(in srgb, var(--accent-2) 11%, transparent),
+      transparent 65%
+    ),
+    radial-gradient(
+      circle at 1px 1px,
+      color-mix(in srgb, var(--text) 7%, transparent) 1px,
+      transparent 0
+    )
+    0 0 / 24px 24px,
     var(--bg);
   background-attachment: fixed;
 }
@@ -129,6 +140,7 @@ main.live {
 /* ---------- Header ---------- */
 
 .app-header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.9rem;
@@ -136,13 +148,33 @@ main.live {
   border-bottom: 1px solid var(--border);
 }
 
+.app-header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 55%, transparent) 35%,
+    color-mix(in srgb, var(--accent-2) 55%, transparent) 65%,
+    transparent
+  );
+}
+
 .brand {
   font-family: var(--font-display);
-  font-size: 1.2rem;
+  font-size: 1.3rem;
   font-weight: 700;
   letter-spacing: -0.015em;
   margin: 0;
   margin-right: auto;
+  background: linear-gradient(135deg, var(--text) 40%, var(--accent));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
 }
 
 .header-actions {
@@ -185,6 +217,45 @@ main.live {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
+/* The replay link gets a permanent gloss sweep so it reads as "worth clicking"
+   the moment it appears, rather than blending into the other header pills. */
+.btn-replay {
+  position: relative;
+  overflow: hidden;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  animation: msg-in 0.3s ease both;
+}
+
+.btn-replay:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.btn-replay::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -75%;
+  width: 45%;
+  height: 100%;
+  background: linear-gradient(115deg, transparent, rgba(255, 255, 255, 0.85), transparent);
+  opacity: 0.6;
+  animation: shine-sweep 2.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes shine-sweep {
+  0%,
+  15% {
+    left: -75%;
+  }
+  65%,
+  100% {
+    left: 140%;
+  }
+}
+
 /* Shown only below the tools-panel breakpoint (see Responsive section). */
 .tools-toggle {
   display: none;
@@ -212,16 +283,19 @@ main.live {
 .status-listening {
   color: var(--c-listening);
   border-color: color-mix(in srgb, var(--c-listening) 40%, var(--border));
+  background: color-mix(in srgb, var(--c-listening) 12%, var(--surface));
 }
 
 .status-thinking {
   color: var(--c-thinking);
   border-color: color-mix(in srgb, var(--c-thinking) 40%, var(--border));
+  background: color-mix(in srgb, var(--c-thinking) 12%, var(--surface));
 }
 
 .status-speaking {
   color: var(--c-speaking);
   border-color: color-mix(in srgb, var(--c-speaking) 40%, var(--border));
+  background: color-mix(in srgb, var(--c-speaking) 12%, var(--surface));
 }
 
 /* ---------- The pulse (signature element) ---------- */
@@ -445,12 +519,47 @@ main.live {
   animation: fade-in 0.6s ease both;
 }
 
+.hero-glow {
+  position: relative;
+  display: inline-flex;
+}
+
+.hero-glow::before {
+  content: '';
+  position: absolute;
+  inset: -36px;
+  z-index: -1;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--accent) 22%, transparent),
+    transparent 70%
+  );
+  filter: blur(2px);
+  animation: glow-breathe 3.2s ease-in-out infinite;
+}
+
+@keyframes glow-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
 .hero-title {
   font-family: var(--font-display);
-  font-size: 1.7rem;
+  font-size: 1.9rem;
   font-weight: 650;
   letter-spacing: -0.02em;
   margin: 0;
+  background: linear-gradient(135deg, var(--text), color-mix(in srgb, var(--accent) 65%, var(--text)));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
 }
 
 .hero-hint {
@@ -488,6 +597,7 @@ main.live {
   background: var(--surface);
   border: 1px solid var(--border);
   border-bottom-left-radius: 0.35rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
 }
 
 .bubble-partial {
@@ -1180,7 +1290,11 @@ main.live {
   height: 2.4rem;
   flex-shrink: 0;
   border-radius: 0.75rem;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 18%, transparent),
+    color-mix(in srgb, var(--accent-2) 18%, transparent)
+  );
   color: var(--accent);
 }
 
