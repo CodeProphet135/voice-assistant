@@ -27,8 +27,10 @@ function CloseIcon() {
 export function ToolsPanel({ open, onSelectPrompt, onClose }: ToolsPanelProps) {
   return (
     <aside
+      id="tools-panel"
       className={`tools-panel${open ? ' tools-panel-open' : ''}`}
       aria-label="Assistant capabilities"
+      inert={!open}
     >
       <div className="tools-panel-header">
         <h2>What I can do</h2>

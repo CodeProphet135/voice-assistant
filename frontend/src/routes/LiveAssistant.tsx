@@ -73,6 +73,8 @@ export function LiveAssistant() {
                 type="button"
                 className="btn-ghost tools-toggle"
                 onClick={() => setToolsOpen((open) => !open)}
+                aria-expanded={toolsOpen}
+                aria-controls="tools-panel"
               >
                 Tools
               </button>
