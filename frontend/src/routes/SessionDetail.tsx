@@ -29,7 +29,10 @@ export function SessionDetail() {
         <header className="app-header">
           <h1 className="brand">Session replay</h1>
           <div className="header-actions">
-            <Link className="nav-link" to="/sessions">
+            <Link className="btn-ghost" to="/">
+              Live
+            </Link>
+            <Link className="btn-ghost" to="/sessions">
               All sessions
             </Link>
           </div>

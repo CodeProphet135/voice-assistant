@@ -37,7 +37,7 @@ export function SessionsList() {
         <header className="app-header">
           <h1 className="brand">Sessions</h1>
           <div className="header-actions">
-            <Link className="nav-link" to="/">
+            <Link className="btn-ghost" to="/">
               Live
             </Link>
           </div>
