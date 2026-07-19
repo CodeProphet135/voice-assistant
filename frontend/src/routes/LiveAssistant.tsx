@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { MicButton } from '../components/MicButton'
 import { StatusBadge } from '../components/StatusBadge'
+import { TimerAlert } from '../components/TimerAlert'
 import { ToolsPanel } from '../components/ToolsPanel'
 import { Transcript } from '../components/Transcript'
 import { useLiveSession } from '../LiveSessionContext'
@@ -94,16 +95,6 @@ export function LiveAssistant() {
 
           {state.error && <p className="error-banner">{state.error}</p>}
 
-          {state.notifications.length > 0 && (
-            <ul className="notifications">
-              {state.notifications.map((note, index) => (
-                <li key={index} className="notification">
-                  ⏱ {note}
-                </li>
-              ))}
-            </ul>
-          )}
-
           <Transcript
             messages={state.messages}
             isThinking={isThinking}
@@ -136,6 +127,11 @@ export function LiveAssistant() {
           onClose={() => setToolsOpen(false)}
         />
       </div>
+
+      <TimerAlert
+        notifications={state.notifications}
+        onDismiss={(id) => dispatch({ type: 'dismiss_notification', id })}
+      />
     </main>
   )
 }

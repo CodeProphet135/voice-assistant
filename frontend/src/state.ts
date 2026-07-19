@@ -13,6 +13,13 @@ export interface Message {
 
 export type ToolActivityStatus = 'running' | 'done'
 
+export interface TimerNotification {
+  /** Stable id (the fired timer's id) so the alert can be dismissed by identity. */
+  id: string
+  /** Display text, e.g. "tea timer done" or "Timer done". */
+  text: string
+}
+
 export interface ToolActivity {
   call_id: string
   name: string
@@ -39,7 +46,7 @@ export interface AppState {
   sttPartial: string
   error: string | null
   /** Fired-timer notifications, appended as each set_timer elapses. */
-  notifications: string[]
+  notifications: TimerNotification[]
 }
 
 export const initialState: AppState = {
@@ -58,6 +65,7 @@ export type LocalAction =
   | { type: 'user_submit'; text: string }
   | { type: 'connected' }
   | { type: 'disconnected' }
+  | { type: 'dismiss_notification'; id: string }
   | { type: 'reset' }
 
 export type Action = ServerEvent | LocalAction
@@ -180,8 +188,23 @@ export function reducer(state: AppState, action: Action): AppState {
     }
 
     case 'timer_fired': {
-      const label = action.label ? `${action.label} timer` : 'Timer'
-      return { ...state, notifications: [...state.notifications, `${label} done`] }
+      // Only append "timer" when the label doesn't already say it, so a model
+      // that labels a timer "timer" doesn't produce "timer timer done".
+      const trimmed = action.label?.trim()
+      const label = trimmed
+        ? /timer$/i.test(trimmed)
+          ? trimmed
+          : `${trimmed} timer`
+        : 'Timer'
+      const note: TimerNotification = { id: action.timer_id, text: `${label} done` }
+      return { ...state, notifications: [...state.notifications, note] }
+    }
+
+    case 'dismiss_notification': {
+      return {
+        ...state,
+        notifications: state.notifications.filter((note) => note.id !== action.id),
+      }
     }
 
     // tts_start / tts_end: no UI yet.
