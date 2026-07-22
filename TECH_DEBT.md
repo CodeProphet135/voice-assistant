@@ -68,7 +68,3 @@ history. Nothing here blocks running the app; fix opportunistically.
 - **No automated browser/mic end-to-end test.** Every phase's mic-capture
   and speaker-playback path (including barge-in) was verified manually by a
   human at a real browser; there's no headless coverage for that surface.
-
-## Docs / assets
-- **README is missing the Jaeger waterfall screenshot and demo GIF** —
-  needs a human at a real browser with a live session to capture.

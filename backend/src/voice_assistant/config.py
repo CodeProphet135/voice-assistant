@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     deepgram_tts_model: str = "aura-2-thalia-en"
 
     # Database
-    database_url: str = "postgresql+asyncpg://va:va@localhost:5432/voice_assistant"
+    database_url: str = "postgresql+asyncpg://va:va@localhost:5433/voice_assistant"
 
     # Event recording: batch-write retry/backoff, and self-disable + periodic
     # reachability re-probe after repeated batch-write failures (mirrors the
