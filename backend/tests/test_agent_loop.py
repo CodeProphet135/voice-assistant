@@ -61,8 +61,16 @@ async def test_plain_text_turn_streams_deltas_and_emits_done() -> None:
     # to on_sentence until the trailing flush() at the end of the turn.
     assert recorder.sentences == ["Hello there friend"]
 
-    # input_items should be untouched (no function calls in this turn).
-    assert input_items == [{"role": "user", "content": "hi"}]
+    # The reply must be recorded in the conversation history — otherwise the
+    # model sees the question as unanswered next turn and re-answers it.
+    assert input_items == [
+        {"role": "user", "content": "hi"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Hello there friend"}],
+        },
+    ]
 
     assert len(fake.responses.calls) == 1
 
@@ -127,7 +135,7 @@ async def test_function_call_turn_executes_tool_and_continues() -> None:
     assert tool_result_events[0].output == "sunny, 22C"
 
     # input_items: original user message, then the function_call, then its
-    # output, in that order.
+    # output, then the assistant's final text reply, in that order.
     assert input_items == [
         {"role": "user", "content": "weather in tokyo?"},
         {
@@ -140,6 +148,11 @@ async def test_function_call_turn_executes_tool_and_continues() -> None:
             "type": "function_call_output",
             "call_id": "call_1",
             "output": "sunny, 22C",
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "It is sunny in Tokyo"}],
         },
     ]
 
@@ -215,6 +228,105 @@ async def test_iteration_cap_stops_infinite_function_call_loop() -> None:
 
     done_events = [e for e in recorder.events if isinstance(e, AssistantDoneEvent)]
     assert len(done_events) == 1
+
+
+async def test_cancelled_turn_commits_partial_text_to_history() -> None:
+    """Barge-in cancels the agent mid-stream. The text streamed so far was
+    (partly) heard by the user, so it must still be committed to the
+    conversation history — otherwise the next turn's model sees the question
+    as unanswered and answers it all over again (the Loom-demo duplicate)."""
+    import asyncio
+
+    from conftest import make_text_delta_event
+
+    release = asyncio.Event()
+
+    class GatedStream:
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield make_text_delta_event("Julius Caesar was ")
+            await release.wait()  # never released — the task is cancelled here
+
+    class GatedResponses:
+        async def create(self, **kwargs):
+            return GatedStream()
+
+    class GatedClient:
+        responses = GatedResponses()
+
+    recorder = Recorder()
+    input_items: list[dict] = [{"role": "user", "content": "tell me about caesar"}]
+
+    task = asyncio.create_task(
+        run_agent(
+            client=GatedClient(),
+            input_items=input_items,
+            tools=[],
+            emit=recorder.emit,
+            on_sentence=recorder.on_sentence,
+            tool_executor=never_called_tool_executor,
+        )
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert input_items == [
+        {"role": "user", "content": "tell me about caesar"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Julius Caesar was "}],
+        },
+    ]
+
+
+async def test_llm_error_commits_partial_text_to_history() -> None:
+    """A stream that dies mid-reply already surfaced text to the user; that
+    partial text must be committed to history like any other reply."""
+    from conftest import make_text_delta_event
+
+    class ExplodingStream:
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield make_text_delta_event("Half an ")
+            raise RuntimeError("connection reset")
+
+    class ExplodingResponses:
+        async def create(self, **kwargs):
+            return ExplodingStream()
+
+    class ExplodingClient:
+        responses = ExplodingResponses()
+
+    recorder = Recorder()
+    input_items: list[dict] = []
+
+    full_text = await run_agent(
+        client=ExplodingClient(),
+        input_items=input_items,
+        tools=[],
+        emit=recorder.emit,
+        on_sentence=recorder.on_sentence,
+        tool_executor=never_called_tool_executor,
+    )
+
+    assert full_text == "Half an "
+    assert input_items == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Half an "}],
+        },
+    ]
 
 
 async def test_tool_result_event_carries_final_arguments() -> None:

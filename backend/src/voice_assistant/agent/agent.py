@@ -52,6 +52,26 @@ async def _execute_tool_call(
         return f"Error: {exc}"
 
 
+def _commit_assistant_message(input_items: list[dict], parts: list[str]) -> None:
+    """Append the accumulated assistant text to the conversation history as
+    an assistant message item, then clear ``parts``. No-op when empty.
+
+    Every path out of an iteration must land here — normal completion,
+    cancellation (barge-in), and stream errors alike. History without the
+    assistant's replies makes every past question look unanswered, and the
+    model then re-answers them in later turns (the Loom-demo duplicate)."""
+    text = "".join(parts)
+    parts.clear()
+    if text:
+        input_items.append(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }
+        )
+
+
 async def run_agent(
     *,
     client: AsyncOpenAI,
@@ -63,9 +83,9 @@ async def run_agent(
 ) -> str:
     """Run one user turn to completion, including any tool-call round-trips.
 
-    ``input_items`` is mutated in place — assistant function calls and their
-    outputs are appended as the loop progresses — so the caller (``Session``)
-    keeps the full running conversation state across turns.
+    ``input_items`` is mutated in place — assistant messages, function calls
+    and their outputs are appended as the loop progresses — so the caller
+    (``Session``) keeps the full running conversation state across turns.
 
     Returns the full concatenated assistant text produced across every
     iteration of the loop (i.e. the final textual reply after all tool calls
@@ -73,6 +93,8 @@ async def run_agent(
     """
     chunker = Chunker()
     full_text_parts: list[str] = []
+    # The current iteration's text, not yet committed to input_items.
+    iteration_parts: list[str] = []
 
     for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
         function_calls: list[Any] = []
@@ -103,6 +125,7 @@ async def run_agent(
                     if event.type == "response.output_text.delta":
                         delta = event.delta
                         full_text_parts.append(delta)
+                        iteration_parts.append(delta)
                         await emit(AssistantDeltaEvent(text=delta))
                         for sentence in chunker.feed(delta):
                             await on_sentence(sentence)
@@ -118,9 +141,17 @@ async def run_agent(
                             )
                     elif event.type == "response.completed":
                         final_response = event.response
+        except asyncio.CancelledError:
+            # Barge-in. The user (partly) heard this text — keep it in
+            # history so the next turn doesn't re-answer the question.
+            _commit_assistant_message(input_items, iteration_parts)
+            raise
         except Exception as exc:  # noqa: BLE001 - never let this kill the WS
             await emit(ErrorEvent(message=f"LLM request failed: {exc}"))
+            _commit_assistant_message(input_items, iteration_parts)
             return "".join(full_text_parts)
+
+        _commit_assistant_message(input_items, iteration_parts)
 
         if final_response is not None:
             function_calls = [
@@ -132,7 +163,18 @@ async def run_agent(
         if not function_calls:
             break
 
-        for item in function_calls:
+        results = await asyncio.gather(
+            *(
+                _execute_tool_call(tool_executor, item.name, item.arguments, item.call_id)
+                for item in function_calls
+            )
+        )
+
+        # Append each call and its output as an atomic pair (no await between
+        # them): a cancellation landing mid-loop must never leave an orphaned
+        # ``function_call`` in history — the Responses API 400s on it, which
+        # would poison every later turn of the session.
+        for item, output in zip(function_calls, results, strict=True):
             input_items.append(
                 {
                     "type": "function_call",
@@ -141,15 +183,6 @@ async def run_agent(
                     "arguments": item.arguments,
                 }
             )
-
-        results = await asyncio.gather(
-            *(
-                _execute_tool_call(tool_executor, item.name, item.arguments, item.call_id)
-                for item in function_calls
-            )
-        )
-
-        for item, output in zip(function_calls, results, strict=True):
             input_items.append(
                 {
                     "type": "function_call_output",
