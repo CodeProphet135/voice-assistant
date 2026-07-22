@@ -40,7 +40,7 @@ def log(msg: str) -> None:
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="ws://localhost:8000/ws")
+    ap.add_argument("--url", default="ws://localhost:8010/ws")
     ap.add_argument("--wav", required=True)
     ap.add_argument("--echo", action="store_true", help="feed TTS audio back into the mic")
     ap.add_argument(

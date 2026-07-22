@@ -1,7 +1,7 @@
 .PHONY: dev-backend dev-frontend up down migrate test lint fmt
 
 dev-backend:
-	cd backend && uv run uvicorn voice_assistant.main:app --reload --port 8000
+	cd backend && uv run uvicorn voice_assistant.main:app --reload --port 8010
 
 dev-frontend:
 	cd frontend && npm run dev

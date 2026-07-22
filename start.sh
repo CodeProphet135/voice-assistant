@@ -70,13 +70,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-(cd backend && uv run uvicorn voice_assistant.main:app --reload --port 8000 2>&1 | sed -e "s/^/${MAGENTA}[backend]${NC} /") &
+(cd backend && uv run uvicorn voice_assistant.main:app --reload --port 8010 2>&1 | sed -e "s/^/${MAGENTA}[backend]${NC} /") &
 (cd frontend && npm run dev 2>&1 | sed -e "s/^/${CYAN}[frontend]${NC} /") &
 
 sleep 2
 ok "Postgres: http://localhost:5432"
 ok "Jaeger:   http://localhost:16686"
-ok "Backend:  http://localhost:8000"
-ok "Frontend: http://localhost:5173"
+ok "Backend:  http://localhost:8010"
+ok "Frontend: http://localhost:5174"
 
 wait

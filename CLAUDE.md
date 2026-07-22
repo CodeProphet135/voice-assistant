@@ -55,8 +55,8 @@ See [TECH_DEBT.md](TECH_DEBT.md) for known gaps and non-blocking issues.
 ## Commands
 
 ```bash
-make dev-backend    # uvicorn on :8000 (uv run)
-make dev-frontend   # vite on :5173
+make dev-backend    # uvicorn on :8010 (uv run)
+make dev-frontend   # vite on :5174
 make up             # postgres + jaeger via docker compose (no --profile flags — profiles in docker-compose.yml gate what's opt-in, e.g. the containerized `app` service)
 make migrate        # alembic upgrade head
 make test           # backend pytest + frontend typecheck

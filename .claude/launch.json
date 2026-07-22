@@ -5,13 +5,13 @@
       "name": "backend",
       "runtimeExecutable": "make",
       "runtimeArgs": ["dev-backend"],
-      "port": 8000
+      "port": 8010
     },
     {
       "name": "frontend",
       "runtimeExecutable": "make",
       "runtimeArgs": ["dev-frontend"],
-      "port": 5173
+      "port": 5174
     }
   ]
 }

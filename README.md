@@ -144,11 +144,11 @@ This bootstraps `.env` (prompting for your `OPENAI_API_KEY` and
 `DEEPGRAM_API_KEY` the first time — leave either blank and the app still
 starts, but conversations will fail with an auth error until you add it),
 starts Postgres + Jaeger, runs migrations, and launches the backend
-(`:8000`) and frontend (`:5173`) together with interleaved, prefixed logs.
+(`:8010`) and frontend (`:5174`) together with interleaved, prefixed logs.
 Ctrl+C stops the dev servers; Postgres/Jaeger keep running in the
 background (`make down` to stop them too).
 
-Then open http://localhost:5173 and talk (or type) to the assistant.
+Then open http://localhost:5174 and talk (or type) to the assistant.
 
 ### Try it without a dev setup
 
@@ -161,7 +161,7 @@ docker compose run --rm app uv run alembic upgrade head   # first run only
 ```
 
 This builds frontend+backend into one image and serves the whole app on
-`:8000`.
+`:8010`.
 
 ### Manual / step-by-step
 
@@ -173,8 +173,8 @@ cp .env.example .env   # fill in OPENAI_API_KEY and DEEPGRAM_API_KEY; this is th
                        # absolute path regardless of cwd) — don't add another
 make up                # start Postgres + Jaeger via docker compose
 make migrate
-make dev-backend       # FastAPI on :8000
-make dev-frontend      # Vite on :5173
+make dev-backend       # FastAPI on :8010
+make dev-frontend      # Vite on :5174
 ```
 
 ### Try the Replay

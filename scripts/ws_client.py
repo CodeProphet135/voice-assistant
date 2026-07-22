@@ -21,7 +21,7 @@ installed there is on the path)::
     cd backend
     uv run python ../scripts/ws_client.py --text "hello"
     uv run python ../scripts/ws_client.py --wav ../samples/hello_16k.wav
-    uv run python ../scripts/ws_client.py --text "hello" --url ws://localhost:8000/ws
+    uv run python ../scripts/ws_client.py --text "hello" --url ws://localhost:8010/ws
 
 ``--text`` requires a live server (``make dev-backend``) and a real
 ``OPENAI_API_KEY`` configured in ``backend/.env`` — this makes an actual
@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 
 import websockets
 
-DEFAULT_URL = "ws://localhost:8000/ws"
+DEFAULT_URL = "ws://localhost:8010/ws"
 
 # 16kHz mono 16-bit PCM, per the established mic-capture convention
 # (CLAUDE.md) -- 30ms frames land comfortably in the 20-40ms target range.
