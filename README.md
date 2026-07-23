@@ -222,6 +222,19 @@ console instead.
 
 ![Jaeger waterfall for a turn: llm.request, tool.execute (weather + timer), and the follow-up llm.request calls](docs/jaeger-waterfall.png)
 
+### Read the logs
+
+The backend logs to stderr (your terminal in dev, container output under
+Docker) — it deliberately owns no log file, so the runtime decides where the
+stream goes. Every line carries the active trace/span id, so a log line and its
+Jaeger span line up by trace id:
+
+```
+12:47:15 INFO    voice_assistant.session [trace=a1b2… span=c3d4…] session … connected
+```
+
+Set `LOG_LEVEL` (`DEBUG`/`INFO`/`WARNING`/`ERROR`) in `.env` to change verbosity.
+
 ## Testing
 
 ```bash
