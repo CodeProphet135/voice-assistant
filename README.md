@@ -13,8 +13,9 @@ event inspector — the live UI and the replay share the exact same reducer.
 
 ![CI](https://github.com/codeprophet135/voice-assistant/actions/workflows/ci.yml/badge.svg)
 
-<!-- ![demo](docs/demo.gif) -->
-https://github.com/user-attachments/assets/d72b29b4-3d98-498a-8b04-5537c2cd9990
+![demo](docs/demo.gif)
+
+Full-quality recording: https://github.com/user-attachments/assets/d72b29b4-3d98-498a-8b04-5537c2cd9990
 
 ## Architecture
 
@@ -208,6 +209,8 @@ and `tts.synthesize` spans that surface in the Jaeger UI
 (http://localhost:16686) as the conversation runs — no need to end the session.
 Leave the endpoint empty to skip exporting and just print spans to the backend
 console instead.
+
+![Jaeger waterfall for a turn: llm.request, tool.execute (weather + timer), and the follow-up llm.request calls](docs/jaeger-waterfall.png)
 
 ## Testing
 
