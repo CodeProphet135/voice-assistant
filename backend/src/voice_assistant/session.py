@@ -575,14 +575,6 @@ class Session:
                             )
                             word_count = len(stripped.split())
                             if score >= _ECHO_THRESHOLD:
-                                # Diagnostics for an open barge-in echo-
-                                # classification investigation; kept until it's
-                                # pinned down from a live repro, then removed.
-                                _logger.warning(
-                                    "BARGE DEBUG interim DROPPED-echo turn_active=%s "
-                                    "score=%.2f words=%d text=%r",
-                                    self._turn_active(), score, word_count, stripped,
-                                )
                                 # Our own TTS leaking into the mic -- drop it
                                 # entirely: no barge-in, and don't render it
                                 # as a live user bubble either.
@@ -593,12 +585,6 @@ class Session:
                                     word_count == 2
                                     and score < _TWO_WORD_BARGE_MAX_SCORE
                                 )
-                            )
-                            _logger.warning(
-                                "BARGE DEBUG interim %s turn_active=%s score=%.2f "
-                                "words=%d text=%r",
-                                "BARGE" if will_barge else "shown-no-barge",
-                                self._turn_active(), score, word_count, stripped,
                             )
                             if will_barge:
                                 await self._barge_in()
@@ -611,12 +597,6 @@ class Session:
                             self._echo_score(ev.text) if self._echo_possible() else 0.0
                         )
                         final_is_echo = final_score >= _ECHO_THRESHOLD
-                        _logger.warning(
-                            "BARGE DEBUG final turn_active=%s speech_final=%s "
-                            "is_echo=%s score=%.2f text=%r",
-                            self._turn_active(), ev.speech_final, final_is_echo,
-                            final_score, final_stripped,
-                        )
                         if not final_is_echo:
                             self._stt_buffer.append(ev.text)
 
@@ -625,18 +605,12 @@ class Session:
                 elif isinstance(ev, SpeechStarted):
                     # VAD fires on any noise incl. our own TTS echo during
                     # SPEAKING; emit only when no turn is active so recorded
-                    # speech_started marks a genuine user-turn onset. Still a
-                    # no-op for barge-in (interim transcripts own that).
-                    if self._turn_active():
-                        _logger.warning("BARGE DEBUG speech_started (VAD) during active turn")
-                    else:
+                    # speech_started marks a genuine user-turn onset. A no-op
+                    # for barge-in (interim transcripts own that).
+                    if not self._turn_active():
                         await self.emit(SpeechStartedEvent())
                 elif isinstance(ev, UtteranceEnd):
                     # Fallback turn-end signal when speech_final never fires.
-                    _logger.warning(
-                        "BARGE DEBUG utterance_end turn_active=%s buffer=%r",
-                        self._turn_active(), self._stt_buffer,
-                    )
                     await self._commit_stt_turn()
                 elif isinstance(ev, SttClosed):
                     # STT dropped and bounded reconnect was exhausted. Surface
