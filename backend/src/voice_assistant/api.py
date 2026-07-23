@@ -1,4 +1,4 @@
-"""Read-only REST surface for the Timeline/Replay UI (Phase 6)."""
+"""Read-only REST surface for the Timeline/Replay UI."""
 
 import logging
 import uuid

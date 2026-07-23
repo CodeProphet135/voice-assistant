@@ -1,70 +1,71 @@
-# Tech Debt
+# Known Limitations & Future Work
 
-Known gaps and non-blocking issues, extracted from the project's session
-history. Nothing here blocks running the app; fix opportunistically.
-
-## Features
-- **`web_search` built-in tool isn't wired up.** Deferred since Phase 4 —
-  OpenAI's built-in web_search tool was never added to the tool registry.
+A deliberate ledger of what this project does *not* do yet, and why. Nothing
+here blocks running the app — each item is a conscious trade-off made to keep a
+solo, phased build focused. It's kept honest and current so the gaps are known
+rather than discovered.
 
 ## Correctness
-- **Replaying a text-input turn shows no "You" bubble.**
-  `Session._handle_text_input` runs the turn but never `emit()`s a
-  user-message event, unlike voice turns (which emit `stt_final`). A fix
-  would emit a recorded user-utterance event shaped like `stt_final` so the
-  existing reducer picks it up — no new event type needed.
-- **Echo guard can still eat a very fast overlapping reply — window now
-  ~1s of actual playback end.** The unbounded version of this bug (genuine
-  user speech dropped as echo long after playback) is fixed — `_spoken_recent`
-  clears per turn and the guard is time-gated to the playback horizon + tail
-  (commit `9000460`; the full incident write-ups were removed from `docs/`
-  but live in git history at that commit). The browser now reports actual
-  playback end (`playback_finished` client frame, sent by `player.ts` when
-  its buffer drains), which collapses the horizon to the real moment and
-  arms a 1.0s confirmed tail (live-measured capture→final-transcript latency
-  is ~0.5s incl. Deepgram's 300ms endpointing; 1.0s is ~2× that). The 2.0s
-  tail on the server-side byte-count estimate remains as fallback when the
-  signal is lost/stalled, and the signal can only ever shorten the window,
-  never extend it. Residual: an answer that heavily reuses the assistant's
-  words *within ~1s* of playback end can still be misclassified; inherent
-  to timing-based gating — closing it fully needs content-aware scoring
-  (e.g. barge on novel words), same direction as the double-talk item below.
-- **Double-talk barge-in is still open.** Interrupting *while* the
-  assistant is speaking can fail: the mic picks up TTS echo mixed with the
-  user's voice, so either the blended transcript scores as echo and our
-  guard drops it (H2 — fix in our scoring, e.g. barge on novel words) or
-  the browser's echo canceller suppresses the user's voice before Deepgram
-  ever hears it (H3 — acoustic fix, e.g. duck playback). Temporary
-  `BARGE DEBUG` warning logs in `_consume_stt` (session.py) distinguish the
-  two from a live repro: `DROPPED-echo` lines carrying the user's words ⇒
-  H2; VAD lines with no transcript of the user ⇒ H3. Keep the logging until
-  diagnosed; the full handoff doc is in git history at `9000460`
-  (`docs/barge-in-debug-prompt.md`).
-- **Minor lock-acquisition race in `_commit_stt_turn`.** On a same-tick
-  `stop`, state can settle to `idle` instead of `listening`.
-- **Text-input path isn't under `_turn_lock`.** Only the STT-commit path is
-  serialized; typing and speaking at the same instant could race
-  `input_items`. Low-probability, not yet hit in practice.
-- **A dropped event batch is detected but not recovered.** `EventRecorder`
-  now retries transient write failures and self-disables + re-probes after
-  repeated failures (see `events.py`), and `list_events` logs a warning and
-  the Event Inspector shows a banner when persisted `seq` values have a gap
-  (`gaps.py` / `gaps.ts`). But a batch that is still permanently lost after
-  all retries has no recovery path — there's no re-synthesis, backfill, or
-  operator alert beyond the log line and the UI banner.
-- **start.sh** prints the green "ready" URLs after a blind `sleep 2`, even if backend/frontend crashed immediately (bad import, port already taken) — the user sees "ready" for a dead server. Fix by capturing each job's PID and checking it's still alive before printing ready
--  **Minor issues with start.sh**: (1) `read` under set -e aborts ungracefully on closed stdin/non-interactive invocation, (2) sed key substitution isn't metacharacter-safe for keys containing |, &, \, (3) color codes print raw escape sequences when output is redirected to a file.
 
-## Robustness
-- **`Session.__init__` builds the OpenAI client eagerly**, so constructing a
-  bare `Session()` with no `OPENAI_API_KEY` raises immediately instead of
-  failing lazily on first use (or with a clearer error).
+- **A replayed text-only turn shows no user bubble.** Typed turns run the agent
+  but don't emit a recorded user-message event, so the Replay view has nothing
+  to render on the "you" side (voice turns emit `stt_final` and replay fine).
+  The fix is small: emit a recorded user-utterance event shaped like
+  `stt_final` so the existing reducer picks it up — no new event type needed.
 
-## Unused / half-plumbed
-- **`StartEvent.sample_rate` is accepted but ignored** — `DeepgramSTT`
-  hardcodes 16kHz regardless of what the client sends.
+- **The echo guard has a ~1 second residual window.** While the assistant is
+  speaking, its own TTS can leak back through the mic. A word-overlap score
+  combined with a time gate anchored to browser-reported playback end screens
+  that echo out, but an answer that heavily reuses the assistant's own words
+  *within ~1s* of playback ending can still be misclassified. This is inherent
+  to timing-based gating; closing it fully calls for content-aware scoring
+  (e.g. barging only on genuinely novel words).
+
+- **A same-tick stop can settle the UI to `idle` instead of `listening`.** A
+  narrow lock-acquisition ordering in the STT commit path — cosmetic and
+  corrected on the next state transition.
+
+## Reliability
+
+- **A permanently dropped event batch has no backfill.** The recorder retries
+  transient write failures with backoff, and self-disables then periodically
+  re-probes after repeated failures; the read side detects and flags `seq` gaps
+  in the Event Inspector. But a batch still lost after every retry is gone —
+  there's no re-synthesis or operator alert beyond the log line and the UI
+  banner. Acceptable because recording is best-effort by design and never
+  blocks the live conversation.
+
+- **Constructing a `Session` requires an OpenAI key up front.** The OpenAI
+  client is built eagerly in `Session.__init__`, so with no key in settings or
+  the environment the SDK raises there rather than failing lazily on first use.
+  A factory-seam client (like the STT/TTS providers already use) would give a
+  cleaner error path.
+
+## Developer experience
+
+- **`start.sh` reports "ready" after a fixed wait.** It prints the ready URLs
+  after a short sleep without confirming each dev server actually came up, so a
+  server that died on boot (bad import, port already taken) can still be
+  announced as ready. Capturing each background PID and liveness-checking it
+  before printing would fix it.
+
+- **`start.sh` has a few shell-robustness rough edges** on non-interactive or
+  redirected invocation: `read` under `set -e` on closed stdin, `sed` key
+  substitution that isn't metacharacter-safe, and raw color escapes when output
+  is piped to a file.
+
+## Unused / half-wired
+
+- **`StartEvent.sample_rate` is accepted but ignored** — the STT provider
+  hardcodes 16 kHz regardless of what the client advertises.
 
 ## Test coverage
-- **No automated browser/mic end-to-end test.** Every phase's mic-capture
-  and speaker-playback path (including barge-in) was verified manually by a
-  human at a real browser; there's no headless coverage for that surface.
+
+- **No headless browser/mic end-to-end test.** The mic-capture and
+  speaker-playback paths (including barge-in) are verified manually in a real
+  browser; there's no automated coverage for that surface.
+
+## Future features
+
+- **Built-in `web_search` tool.** OpenAI's hosted `web_search` tool isn't in
+  the registry yet — a natural next tool to wire in.

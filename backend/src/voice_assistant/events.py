@@ -1,4 +1,4 @@
-"""Append-only EventRecorder (Phase 6).
+"""Append-only EventRecorder.
 
 One recorder per Session. ``record()`` is a synchronous, non-blocking call on
 the hot path: it assigns monotonic ``seq`` + metadata and enqueues onto an

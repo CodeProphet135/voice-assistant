@@ -2,11 +2,10 @@
 
 Frames are JSON text messages, each tagged by a ``type`` discriminator. Binary
 WebSocket frames (not modelled here) carry raw audio: client→server microphone
-PCM (Phase 2) and server→client synthesized TTS PCM (Phase 3).
+PCM and server→client synthesized TTS PCM.
 
-This is *one* contract spanning every phase. Audio/STT/TTS/timer frames are
-defined now even though the code that emits them lands in later phases, so the
-protocol never has to change shape underneath the frontend reducer.
+This is *one* contract covering the whole pipeline, so the protocol never has
+to change shape underneath the frontend reducer.
 
 ``frontend/src/ws.ts`` mirrors this file — keep the two in lockstep.
 """
@@ -21,8 +20,8 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 
 class StartEvent(BaseModel):
-    """Open a conversational turn context. Sent when the user starts a session
-    or (Phase 2) presses the mic button. ``sample_rate`` is advisory for audio."""
+    """Open a conversational turn context. Sent when the user presses the mic
+    button to start capture. ``sample_rate`` is advisory for audio."""
 
     type: Literal["start"] = "start"
     sample_rate: int = 16000
@@ -35,7 +34,7 @@ class StopEvent(BaseModel):
 
 
 class TextInputEvent(BaseModel):
-    """A typed user message (Phase 1). Commits a turn and launches the agent."""
+    """A typed user message. Commits a turn and launches the agent."""
 
     type: Literal["text_input"] = "text_input"
     text: str
@@ -106,10 +105,9 @@ class SttFinalEvent(BaseModel):
 
 
 class SpeechStartedEvent(BaseModel):
-    """Deepgram VAD detected the user beginning to speak (Phase 6). Emitted
-    only when no turn is active, so it marks a genuine user-turn onset (not
-    the assistant's own TTS echo). A Timeline/Replay signal; the live reducer
-    ignores it."""
+    """Deepgram VAD detected the user beginning to speak. Emitted only when no
+    turn is active, so it marks a genuine user-turn onset (not the assistant's
+    own TTS echo). A Timeline/Replay signal; the live reducer ignores it."""
 
     type: Literal["speech_started"] = "speech_started"
 
@@ -130,9 +128,9 @@ class AssistantDoneEvent(BaseModel):
 
 class LlmRequestEvent(BaseModel):
     """A snapshot of the exact serialized ``input`` sent to the Responses API
-    for one tool-loop iteration (Phase 6). The payoff of the ``store=False``
-    design — fully serializable conversation state per request. Surfaced in
-    the Event Inspector; the live reducer ignores it."""
+    for one tool-loop iteration. The payoff of the ``store=False`` design —
+    fully serializable conversation state per request. Surfaced in the Event
+    Inspector; the live reducer ignores it."""
 
     type: Literal["llm_request"] = "llm_request"
     input: list[dict]
@@ -165,7 +163,7 @@ class ToolResultEvent(BaseModel):
 
 
 class TtsStartEvent(BaseModel):
-    """A sentence is about to be streamed as binary TTS audio (Phase 3)."""
+    """A sentence is about to be streamed as binary TTS audio."""
 
     type: Literal["tts_start"] = "tts_start"
     sentence_index: int
@@ -173,19 +171,19 @@ class TtsStartEvent(BaseModel):
 
 
 class TtsEndEvent(BaseModel):
-    """All audio for the current turn has been sent (Phase 3)."""
+    """All audio for the current turn has been sent."""
 
     type: Literal["tts_end"] = "tts_end"
 
 
 class TtsCancelEvent(BaseModel):
-    """Barge-in: discard any buffered/playing audio immediately (Phase 3)."""
+    """Barge-in: discard any buffered/playing audio immediately."""
 
     type: Literal["tts_cancel"] = "tts_cancel"
 
 
 class TimerFiredEvent(BaseModel):
-    """A ``set_timer`` tool timer elapsed (Phase 5)."""
+    """A ``set_timer`` tool timer elapsed."""
 
     type: Literal["timer_fired"] = "timer_fired"
     timer_id: str

@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12141d"/>
+      <stop offset="1" stop-color="#0e1017"/>
+    </linearGradient>
+    <linearGradient id="titleFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e9eaf2"/>
+      <stop offset="1" stop-color="#a58bff"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M1,1 L8,4.5 L1,8" fill="none" stroke="#5b6178" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arrowAccent" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M1,1 L8,4.5 L1,8" fill="none" stroke="#7c8cff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- Panel -->
+  <rect x="4" y="4" width="1192" height="632" rx="22" fill="url(#panel)" stroke="#242a3c" stroke-width="1.5"/>
+
+  <!-- Header -->
+  <text x="44" y="66" fill="url(#titleFill)" font-size="33" font-weight="700">Voice Assistant</text>
+  <text x="45" y="97" fill="#8b90a3" font-size="15.5">Real-time, tool-using voice — mic to speaker over a single WebSocket, sentence by sentence.</text>
+  <!-- Latency pill -->
+  <rect x="946" y="40" width="210" height="40" rx="20" fill="#8ed957" fill-opacity="0.08" stroke="#8ed957" stroke-opacity="0.55" stroke-width="1.5"/>
+  <circle cx="972" cy="60" r="4" fill="#8ed957"/>
+  <text x="986" y="65" fill="#c9d6bf" font-size="14.5" font-weight="600">~1.6 s voice-to-voice</text>
+
+  <!-- ===================== LIVE PATH ===================== -->
+  <text x="44" y="150" fill="#6e7180" font-size="12" font-weight="700" letter-spacing="2.5">LIVE PATH</text>
+
+  <!-- Backend band -->
+  <rect x="316" y="168" width="562" height="236" rx="18" fill="#161a26" stroke="#2a3047" stroke-width="1.3" stroke-dasharray="5 5"/>
+  <text x="334" y="192" fill="#8b90a3" font-size="12.5" font-weight="600" letter-spacing="0.5">FastAPI session orchestrator</text>
+
+  <!-- Mic (browser) -->
+  <g>
+    <rect x="50" y="200" width="120" height="76" rx="13" fill="#191d29" stroke="#4cc3ff" stroke-opacity="0.55" stroke-width="1.5"/>
+    <rect x="50" y="200" width="4" height="76" rx="2" fill="#4cc3ff"/>
+    <text x="68" y="232" font-size="20">🎤</text>
+    <text x="96" y="232" fill="#e9eaf2" font-size="14.5" font-weight="600">Mic</text>
+    <text x="68" y="253" fill="#8b90a3" font-size="11.5">AudioWorklet</text>
+    <text x="68" y="267" fill="#8b90a3" font-size="11.5">16 kHz Int16 PCM</text>
+  </g>
+
+  <!-- WebSocket in -->
+  <g>
+    <rect x="206" y="200" width="90" height="76" rx="13" fill="#191d29" stroke="#7c8cff" stroke-opacity="0.6" stroke-width="1.5"/>
+    <text x="251" y="234" fill="#c3c9ff" font-size="13.5" font-weight="600" text-anchor="middle">Web</text>
+    <text x="251" y="251" fill="#c3c9ff" font-size="13.5" font-weight="600" text-anchor="middle">Socket</text>
+    <text x="251" y="267" fill="#6e7180" font-size="10.5" text-anchor="middle">/ws</text>
+  </g>
+
+  <!-- STT -->
+  <g>
+    <rect x="332" y="212" width="150" height="72" rx="13" fill="#191d29" stroke="#4cc3ff" stroke-opacity="0.55" stroke-width="1.5"/>
+    <rect x="332" y="212" width="4" height="72" rx="2" fill="#4cc3ff"/>
+    <text x="350" y="242" fill="#e9eaf2" font-size="14.5" font-weight="600">Deepgram STT</text>
+    <text x="350" y="262" fill="#8b90a3" font-size="11.5">streaming · endpointing</text>
+  </g>
+
+  <!-- Agent -->
+  <g>
+    <rect x="512" y="212" width="164" height="72" rx="13" fill="#191d29" stroke="#f0b24e" stroke-opacity="0.55" stroke-width="1.5"/>
+    <rect x="512" y="212" width="4" height="72" rx="2" fill="#f0b24e"/>
+    <text x="530" y="242" fill="#e9eaf2" font-size="14.5" font-weight="600">Agent loop</text>
+    <text x="530" y="262" fill="#8b90a3" font-size="11.5">OpenAI Responses · tools</text>
+  </g>
+
+  <!-- Tools -->
+  <g>
+    <rect x="512" y="322" width="164" height="60" rx="13" fill="#191d29" stroke="#a89bff" stroke-opacity="0.55" stroke-width="1.5"/>
+    <rect x="512" y="322" width="4" height="60" rx="2" fill="#a89bff"/>
+    <text x="530" y="348" fill="#e9eaf2" font-size="14" font-weight="600">Tool registry</text>
+    <text x="530" y="367" fill="#8b90a3" font-size="11.5">weather · timer · notes</text>
+  </g>
+  <!-- Agent <-> Tools -->
+  <line x1="594" y1="284" x2="594" y2="322" stroke="#a89bff" stroke-opacity="0.7" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="600" y1="322" x2="600" y2="284" stroke="#a89bff" stroke-opacity="0.7" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- TTS -->
+  <g>
+    <rect x="706" y="212" width="150" height="72" rx="13" fill="#191d29" stroke="#8ed957" stroke-opacity="0.55" stroke-width="1.5"/>
+    <rect x="706" y="212" width="4" height="72" rx="2" fill="#8ed957"/>
+    <text x="724" y="242" fill="#e9eaf2" font-size="14.5" font-weight="600">Deepgram TTS</text>
+    <text x="724" y="262" fill="#8b90a3" font-size="11.5">Aura · per sentence</text>
+  </g>
+
+  <!-- WebSocket out -->
+  <g>
+    <rect x="906" y="200" width="90" height="76" rx="13" fill="#191d29" stroke="#7c8cff" stroke-opacity="0.6" stroke-width="1.5"/>
+    <text x="951" y="234" fill="#c3c9ff" font-size="13.5" font-weight="600" text-anchor="middle">Web</text>
+    <text x="951" y="251" fill="#c3c9ff" font-size="13.5" font-weight="600" text-anchor="middle">Socket</text>
+    <text x="951" y="267" fill="#6e7180" font-size="10.5" text-anchor="middle">binary PCM</text>
+  </g>
+
+  <!-- Speaker (browser) -->
+  <g>
+    <rect x="1030" y="200" width="120" height="76" rx="13" fill="#191d29" stroke="#8ed957" stroke-opacity="0.55" stroke-width="1.5"/>
+    <rect x="1030" y="200" width="4" height="76" rx="2" fill="#8ed957"/>
+    <text x="1048" y="232" font-size="20">🔊</text>
+    <text x="1076" y="232" fill="#e9eaf2" font-size="14.5" font-weight="600">Speaker</text>
+    <text x="1048" y="253" fill="#8b90a3" font-size="11.5">gapless</text>
+    <text x="1048" y="267" fill="#8b90a3" font-size="11.5">PCM player</text>
+  </g>
+
+  <!-- Live-path arrows -->
+  <line x1="170" y1="238" x2="204" y2="238" stroke="#5b6178" stroke-width="1.7" marker-end="url(#arrow)"/>
+  <line x1="296" y1="242" x2="330" y2="248" stroke="#5b6178" stroke-width="1.7" marker-end="url(#arrow)"/>
+  <line x1="482" y1="248" x2="510" y2="248" stroke="#5b6178" stroke-width="1.7" marker-end="url(#arrow)"/>
+  <line x1="676" y1="248" x2="704" y2="248" stroke="#5b6178" stroke-width="1.7" marker-end="url(#arrow)"/>
+  <line x1="856" y1="248" x2="904" y2="242" stroke="#5b6178" stroke-width="1.7" marker-end="url(#arrow)"/>
+  <line x1="996" y1="238" x2="1028" y2="238" stroke="#5b6178" stroke-width="1.7" marker-end="url(#arrow)"/>
+
+  <!-- ===================== EVENT SOURCING ===================== -->
+  <text x="44" y="470" fill="#6e7180" font-size="12" font-weight="700" letter-spacing="2.5">EVENT SOURCING · REPLAY</text>
+
+  <!-- emit seam -->
+  <g>
+    <rect x="332" y="492" width="150" height="64" rx="13" fill="#191d29" stroke="#7c8cff" stroke-opacity="0.6" stroke-width="1.5"/>
+    <rect x="332" y="492" width="4" height="64" rx="2" fill="#7c8cff"/>
+    <text x="350" y="520" fill="#e9eaf2" font-size="14.5" font-weight="600">emit()</text>
+    <text x="350" y="540" fill="#8b90a3" font-size="11.5">single fan-out seam</text>
+  </g>
+
+  <!-- event log / recorder -->
+  <g>
+    <rect x="512" y="492" width="164" height="64" rx="13" fill="#191d29" stroke="#7a8296" stroke-opacity="0.7" stroke-width="1.5"/>
+    <text x="530" y="520" fill="#e9eaf2" font-size="14.5" font-weight="600">EventRecorder</text>
+    <text x="530" y="540" fill="#8b90a3" font-size="11.5">async-batched · best-effort</text>
+  </g>
+
+  <!-- postgres -->
+  <g>
+    <rect x="706" y="492" width="150" height="64" rx="13" fill="#191d29" stroke="#7a8296" stroke-opacity="0.7" stroke-width="1.5"/>
+    <text x="724" y="520" fill="#e9eaf2" font-size="14.5" font-weight="600">Postgres</text>
+    <text x="724" y="540" fill="#8b90a3" font-size="11.5">append-only event log</text>
+  </g>
+
+  <!-- replay / timeline -->
+  <g>
+    <rect x="906" y="486" width="244" height="76" rx="13" fill="#191d29" stroke="#a58bff" stroke-opacity="0.6" stroke-width="1.5"/>
+    <rect x="906" y="486" width="4" height="76" rx="2" fill="#a58bff"/>
+    <text x="924" y="514" fill="#e9eaf2" font-size="14.5" font-weight="600">Timeline · Replay · Inspector</text>
+    <text x="924" y="535" fill="#8b90a3" font-size="11.5">the same reducer drives live UI</text>
+    <text x="924" y="551" fill="#8b90a3" font-size="11.5">and replay — reused verbatim</text>
+  </g>
+
+  <!-- vertical: every emit() also records -->
+  <line x1="407" y1="284" x2="407" y2="490" stroke="#7c8cff" stroke-opacity="0.5" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#arrowAccent)"/>
+  <text x="416" y="400" fill="#7c8cff" font-size="11" fill-opacity="0.85">every event</text>
+
+  <!-- event-sourcing arrows -->
+  <line x1="482" y1="524" x2="510" y2="524" stroke="#5b6178" stroke-width="1.7" marker-end="url(#arrow)"/>
+  <line x1="676" y1="524" x2="704" y2="524" stroke="#5b6178" stroke-width="1.7" marker-end="url(#arrow)"/>
+  <line x1="856" y1="524" x2="904" y2="524" stroke="#5b6178" stroke-width="1.7" marker-end="url(#arrow)"/>
+
+  <!-- Legend -->
+  <g font-size="11.5" fill="#8b90a3">
+    <circle cx="52" cy="600" r="5" fill="#4cc3ff"/><text x="64" y="604">listening</text>
+    <circle cx="150" cy="600" r="5" fill="#f0b24e"/><text x="162" y="604">thinking</text>
+    <circle cx="246" cy="600" r="5" fill="#a89bff"/><text x="258" y="604">tool</text>
+    <circle cx="316" cy="600" r="5" fill="#8ed957"/><text x="328" y="604">speaking</text>
+  </g>
+  <text x="1150" y="604" fill="#4a4f61" font-size="11" text-anchor="end">Python · FastAPI · asyncio · OpenTelemetry · React</text>
+</svg>

@@ -1,10 +1,13 @@
-"""Per-connection orchestrator.
+"""Per-connection orchestrator: owns one WebSocket's lifecycle and drives
+each user turn through the full voice pipeline.
 
-Phase 2 scope: text-input path (Phase 1) plus streaming speech-to-text
-(Deepgram). Phase 3 adds streaming text-to-speech: the turn now runs as a
-cancellable task that pipelines agent-produced sentences into a TTS queue
-(the structure barge-in, Task 2b, will cancel). Tools (Phase 4) slot into
-the remaining stub without changing this file's shape.
+A turn runs as a cancellable task that appends the user message, runs the
+agent loop, and pipelines every sentence the agent produces into TTS
+synthesis streamed back to the browser as binary audio. Speech-to-text
+(Deepgram) feeds the same turn machinery as typed input, and barge-in cancels
+the in-flight task the moment the user speaks over the assistant. Every
+server->client event flows through the single ``emit()`` seam, which both
+sends on the socket and hands the event to the append-only event log.
 """
 
 import asyncio
@@ -160,16 +163,17 @@ class Session:
         self.ws = ws
         self.input_items: list[dict] = []
 
-        # The SDK reads OPENAI_API_KEY from the environment on its own, but we
-        # pass it explicitly from settings for consistency with the rest of
-        # the app's config surface. An empty key still constructs a client
-        # fine — failures surface as ErrorEvents at call time, not here.
+        # Pass the configured key explicitly; falling back to None keeps the
+        # SDK's own OPENAI_API_KEY env lookup in play. The client is built
+        # eagerly here, so with a key from neither source the SDK raises at
+        # construction rather than lazily on first use (see the known
+        # limitation in TECH_DEBT.md); tests supply a dummy key via the env.
         from openai import AsyncOpenAI
 
         self.client = AsyncOpenAI(api_key=settings.openai_api_key or None)
 
         # STT (mic) state. ``stt`` is None whenever no capture is active, so
-        # the text-only Phase 1 path (and its tests) never touch Deepgram.
+        # the text-only chat path (and its tests) never touch Deepgram.
         self.stt: STTProvider | None = None
         self._stt_task: asyncio.Task | None = None
         self._turn_lock = asyncio.Lock()
@@ -285,9 +289,9 @@ class Session:
         listening (if the mic is active) or idle.
 
         This runs as a cancellable task from the STT path (see
-        ``_commit_stt_turn``) so that barge-in (Task 2b) can cancel it on
-        new speech; the whole turn -- including queue drain -- happens
-        inside the lock so back-to-back turns never interleave.
+        ``_commit_stt_turn``) so that barge-in can cancel it on new speech;
+        the whole turn -- including queue drain -- happens inside the lock so
+        back-to-back turns never interleave.
         """
         async with self._turn_lock:
             with _tracer.start_as_current_span("turn"):
@@ -455,8 +459,8 @@ class Session:
 
     async def _barge_in(self) -> None:
         """Cancel the in-flight assistant turn because the user started
-        speaking over it. ``_run_turn``'s cancel path (Task 2a) unwinds the
-        agent producer + TTS and drains the queue; here we just tear the
+        speaking over it. ``_run_turn``'s cancel path unwinds the agent
+        producer + TTS and drains the queue; here we just tear the
         turn down and reset UI state back to listening."""
         task = self._turn_task
         if task is None or task.done():
@@ -571,9 +575,9 @@ class Session:
                             )
                             word_count = len(stripped.split())
                             if score >= _ECHO_THRESHOLD:
-                                # TEMP diagnostics for the open double-talk
-                                # barge-in investigation (see TECH_DEBT.md);
-                                # keep until it's diagnosed from a live repro.
+                                # Diagnostics for an open barge-in echo-
+                                # classification investigation; kept until it's
+                                # pinned down from a live repro, then removed.
                                 _logger.warning(
                                     "BARGE DEBUG interim DROPPED-echo turn_active=%s "
                                     "score=%.2f words=%d text=%r",
@@ -659,8 +663,8 @@ class Session:
     async def _commit_stt_turn(self) -> None:
         """Join the buffered final-transcript pieces into one utterance and
         launch the turn as a tracked task WITHOUT awaiting it, so
-        ``_consume_stt`` keeps looping (Task 2b needs that to watch for
-        barge-in speech while a turn is running). Overlapping STT turns are
+        ``_consume_stt`` keeps looping (needed to watch for barge-in speech
+        while a turn is running). Overlapping STT turns are
         still serialized by ``_turn_lock`` inside ``_run_turn``."""
         utterance = " ".join(part.strip() for part in self._stt_buffer if part.strip()).strip()
         self._stt_buffer = []
@@ -701,7 +705,7 @@ class Session:
             # A `stop` must not abort a reply that is already generating for an
             # utterance that already committed: wait for any in-flight turn to
             # finish before tearing the consumer down. (Barge-in — cancelling a
-            # turn on *new* speech — is a separate, explicit Phase 3 path.)
+            # turn on *new* speech — is a separate, explicit path.)
             async with self._turn_lock:
                 pass
 

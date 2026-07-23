@@ -1,6 +1,6 @@
 // PURE reducer over the ServerEvent stream (plus a few local UI actions).
 //
-// This is reused verbatim by the Phase 6 Replay view, so it must stay a pure
+// This is reused verbatim by the Replay view, so it must stay a pure
 // function (state, action) => state with NO side effects — no WebSocket, no
 // timers, no DOM access in here. Keep it that way.
 

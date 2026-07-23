@@ -9,20 +9,28 @@ Every session is captured as an append-only event log, so any conversation can b
 [replayed](#timeline--replay) turn-by-turn against a latency timeline and a raw
 event inspector — the live UI and the replay share the exact same reducer.
 
+![Architecture overview — the live voice path and the event-sourced replay path](docs/architecture.svg)
+
 > See [Roadmap](#roadmap) to see how I built this in phases.
 
 ![CI](https://github.com/codeprophet135/voice-assistant/actions/workflows/ci.yml/badge.svg)
 
+## Demo GIF
 ![demo](docs/demo.gif)
 
-Full-quality recording: https://github.com/user-attachments/assets/d72b29b4-3d98-498a-8b04-5537c2cd9990
+## Full-demo video
+https://github.com/user-attachments/assets/d72b29b4-3d98-498a-8b04-5537c2cd9990
 
 ## Architecture
 
-The **live path** (solid, left-to-right) carries voice; the **replay path**
-(reading back from the event log) reuses the *exact same reducer* as the live
-UI — that reuse is the payoff of routing every server→client event through one
-`emit()` seam.
+The **live path** carries voice left-to-right; the **replay path** reads back
+from the event log and reuses the *exact same reducer* as the live UI — that
+reuse is the payoff of routing every server→client event through one `emit()`
+seam. The overview above is the shape at a glance; the full data-flow diagram
+below adds every span and store.
+
+<details>
+<summary><b>Full data-flow diagram</b> (Mermaid)</summary>
 
 ```mermaid
 flowchart LR
@@ -62,6 +70,8 @@ flowchart LR
   Tools -- "notes" --> PG
   Agent -. "spans" .-> OTel[("OpenTelemetry<br/>→ Jaeger")]
 ```
+
+</details>
 
 ### Latency budget (voice-to-voice)
 

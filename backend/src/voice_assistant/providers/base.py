@@ -32,8 +32,8 @@ class Transcript:
 class SpeechStarted:
     """Normalized turn-start signal (Deepgram ``SpeechStarted``).
 
-    Not acted on until Phase 3 barge-in, but cheap to model now so the event
-    union doesn't need to change shape later.
+    Surfaced as a Timeline/Replay onset marker; barge-in itself is driven by
+    interim transcripts, not this event.
     """
 
 
