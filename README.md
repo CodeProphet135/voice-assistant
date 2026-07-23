@@ -9,11 +9,12 @@ Every session is captured as an append-only event log, so any conversation can b
 [replayed](#timeline--replay) turn-by-turn against a latency timeline and a raw
 event inspector — the live UI and the replay share the exact same reducer.
 
-> 🚧 Under active development. See [Roadmap](#roadmap) for build status.
+> See [Roadmap](#roadmap) to see how I built this in phases.
 
 ![CI](https://github.com/codeprophet135/voice-assistant/actions/workflows/ci.yml/badge.svg)
 
 <!-- ![demo](docs/demo.gif) -->
+https://github.com/user-attachments/assets/d72b29b4-3d98-498a-8b04-5537c2cd9990
 
 ## Architecture
 
@@ -224,6 +225,8 @@ make lint       # ruff + tsc
 - [x] Phase 4 — Tools
 - [x] Phase 5 — Polish
 - [x] Phase 6 — Event Timeline + Replay
+- [x] Phase 7 - Beautify Frontend + bug fixing
+- [x] Phase 8 - Demo Video
 
 ## License
 
