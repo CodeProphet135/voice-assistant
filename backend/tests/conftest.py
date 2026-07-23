@@ -84,7 +84,12 @@ class FakeResponses:
         self.scripted_turns.append(events)
 
     async def create(self, **kwargs):
-        self.calls.append(kwargs)
+        # Snapshot ``input`` at call time: the real AsyncOpenAI client
+        # serializes the request body immediately, but ``input_items`` is a
+        # list the caller (agent.py) mutates in place afterward (appending
+        # the assistant's reply). Without a copy here, that later mutation
+        # would leak into this recorded call retroactively.
+        self.calls.append({**kwargs, "input": list(kwargs["input"])})
         if not self.scripted_turns:
             raise AssertionError("FakeResponses.create() called with no scripted turn queued")
         events = self.scripted_turns.pop(0)
