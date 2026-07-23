@@ -6,8 +6,9 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 from voice_assistant.api import router as api_router
-from voice_assistant.telemetry import configure_telemetry
+from voice_assistant.telemetry import configure_logging, configure_telemetry
 
+configure_logging()
 configure_telemetry()
 
 app = FastAPI(title="Voice Assistant")

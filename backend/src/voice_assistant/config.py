@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Observability
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "voice-assistant"
+    # Minimum level for the application's own loggers (uvicorn's access/error
+    # logging is configured separately by uvicorn itself).
+    log_level: str = "INFO"
 
 
 settings = Settings()

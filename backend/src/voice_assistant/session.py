@@ -716,6 +716,7 @@ class Session:
         the socket closes."""
         await self._recorder.start()
         await self.emit(ReadyEvent(session_id=self.session_id))
+        _logger.info("session %s connected", self.session_id)
         try:
             while True:
                 message = await self.ws.receive()
@@ -752,3 +753,4 @@ class Session:
             except Exception:  # noqa: BLE001 - best-effort, never crash on teardown
                 _logger.warning("Error closing TTS provider", exc_info=True)
             await self._recorder.stop()
+            _logger.info("session %s disconnected", self.session_id)
