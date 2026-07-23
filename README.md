@@ -9,8 +9,6 @@ Every session is captured as an append-only event log, so any conversation can b
 [replayed](#timeline--replay) turn-by-turn against a latency timeline and a raw
 event inspector — the live UI and the replay share the exact same reducer.
 
-![Architecture overview — the live voice path and the event-sourced replay path](docs/architecture.svg)
-
 > See [Roadmap](#roadmap) to see how I built this in phases.
 
 ![CI](https://github.com/codeprophet135/voice-assistant/actions/workflows/ci.yml/badge.svg)
@@ -22,6 +20,8 @@ event inspector — the live UI and the replay share the exact same reducer.
 https://github.com/user-attachments/assets/d72b29b4-3d98-498a-8b04-5537c2cd9990
 
 ## Architecture
+
+<img src="docs/architecture.svg" alt="Architecture overview — the live voice path and the event-sourced replay path" width="1200" height="640">
 
 The **live path** carries voice left-to-right; the **replay path** reads back
 from the event log and reuses the *exact same reducer* as the live UI — that
