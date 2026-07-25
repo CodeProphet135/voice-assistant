@@ -1,10 +1,17 @@
 """Shared test fixtures: a FakeOpenAI client scripting Responses API streams,
 plus a FakeWebSocket harness for driving ``Session`` end-to-end.
 
-``run_agent`` (agent/agent.py) duck-types on ``event.type`` and reads a small
-set of attributes (``.delta``, ``.item``, ``.response``) rather than importing
-concrete SDK event classes, so simple ``types.SimpleNamespace`` objects stand
-in perfectly as scripted stream events here.
+Scripted stream events are split by how much fidelity each part actually
+earns. **Output items use the real SDK classes** (``ResponseFunctionToolCall``)
+— they carry every field ``run_agent`` reads business logic off (``call_id``,
+``name``, ``arguments``), so a fake there could silently drift from the SDK and
+leave the suite green while production breaks. They are plain Pydantic models:
+constructing one costs four meaningful fields and no network.
+
+The **envelope events** stay ``types.SimpleNamespace``. ``run_agent`` only
+reads ``.type``, ``.delta`` and ``.response.output`` off them, and the real
+``Response`` model demands ~8 required fields (``id``, ``created_at``,
+``model``, ``object``, ``parallel_tool_calls``, ...) that are pure noise here.
 """
 
 import asyncio
@@ -12,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from openai.types.responses import ResponseFunctionToolCall
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
@@ -19,8 +27,10 @@ def make_text_delta_event(delta: str) -> SimpleNamespace:
     return SimpleNamespace(type="response.output_text.delta", delta=delta)
 
 
-def make_function_call_item(call_id: str, name: str, arguments: str) -> SimpleNamespace:
-    return SimpleNamespace(
+def make_function_call_item(
+    call_id: str, name: str, arguments: str
+) -> ResponseFunctionToolCall:
+    return ResponseFunctionToolCall(
         type="function_call",
         call_id=call_id,
         name=name,
@@ -28,7 +38,7 @@ def make_function_call_item(call_id: str, name: str, arguments: str) -> SimpleNa
     )
 
 
-def make_output_item_added_event(item: SimpleNamespace) -> SimpleNamespace:
+def make_output_item_added_event(item: ResponseFunctionToolCall) -> SimpleNamespace:
     return SimpleNamespace(type="response.output_item.added", item=item)
 
 

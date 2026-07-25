@@ -68,7 +68,7 @@ async def test_plain_text_turn_streams_deltas_and_emits_done() -> None:
         {
             "type": "message",
             "role": "assistant",
-            "content": [{"type": "output_text", "text": "Hello there friend"}],
+            "content": "Hello there friend",
         },
     ]
 
@@ -152,7 +152,7 @@ async def test_function_call_turn_executes_tool_and_continues() -> None:
         {
             "type": "message",
             "role": "assistant",
-            "content": [{"type": "output_text", "text": "It is sunny in Tokyo"}],
+            "content": "It is sunny in Tokyo",
         },
     ]
 
@@ -282,7 +282,7 @@ async def test_cancelled_turn_commits_partial_text_to_history() -> None:
         {
             "type": "message",
             "role": "assistant",
-            "content": [{"type": "output_text", "text": "Julius Caesar was "}],
+            "content": "Julius Caesar was ",
         },
     ]
 
@@ -324,7 +324,7 @@ async def test_llm_error_commits_partial_text_to_history() -> None:
         {
             "type": "message",
             "role": "assistant",
-            "content": [{"type": "output_text", "text": "Half an "}],
+            "content": "Half an ",
         },
     ]
 

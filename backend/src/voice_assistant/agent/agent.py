@@ -3,10 +3,12 @@
 Deliberately NOT using the SDK's built-in tool runner: we stream per-token
 text to the UI/TTS chunker while tools execute mid-stream, and that doesn't
 compose with the runner's synchronous request/response abstraction (see
-CLAUDE.md). Event dispatch is duck-typed on ``event.type`` strings rather than
-importing concrete SDK event classes, so a plain ``types.SimpleNamespace`` (or
-any object with the right attributes) can stand in for real SDK events in
-tests.
+CLAUDE.md). Stream *envelopes* are dispatched on their ``event.type``
+discriminator, but output *items* are narrowed with ``isinstance`` against the
+concrete SDK class (``ResponseFunctionToolCall``) — every field this loop reads
+business logic off lives on an item, so static narrowing there is what makes an
+SDK rename a type error instead of a production ``AttributeError``. Tests
+mirror that split (see ``tests/conftest.py``).
 """
 
 import asyncio
@@ -14,6 +16,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from openai import AsyncOpenAI
+from openai.types.responses import (
+    ResponseFunctionToolCall,
+    ResponseInputItemParam,
+    ToolParam,
+)
+from openai.types.shared_params import Reasoning
 
 from voice_assistant.agent.chunker import Chunker
 from voice_assistant.agent.prompts import SYSTEM_PROMPT
@@ -52,7 +60,9 @@ async def _execute_tool_call(
         return f"Error: {exc}"
 
 
-def _commit_assistant_message(input_items: list[dict], parts: list[str]) -> None:
+def _commit_assistant_message(
+    input_items: list[ResponseInputItemParam], parts: list[str]
+) -> None:
     """Append the accumulated assistant text to the conversation history as
     an assistant message item, then clear ``parts``. No-op when empty.
 
@@ -63,20 +73,14 @@ def _commit_assistant_message(input_items: list[dict], parts: list[str]) -> None
     text = "".join(parts)
     parts.clear()
     if text:
-        input_items.append(
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text}],
-            }
-        )
+        input_items.append({"type": "message", "role": "assistant", "content": text})
 
 
 async def run_agent(
     *,
     client: AsyncOpenAI,
-    input_items: list[dict],
-    tools: list[dict],
+    input_items: list[ResponseInputItemParam],
+    tools: list[ToolParam],
     emit: EmitFn,
     on_sentence: OnSentenceFn,
     tool_executor: ToolExecutorFn,
@@ -97,18 +101,19 @@ async def run_agent(
     iteration_parts: list[str] = []
 
     for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
-        function_calls: list[Any] = []
+        function_calls: list[ResponseFunctionToolCall] = []
 
         try:
             with _tracer.start_as_current_span("llm.request") as span:
                 span.set_attribute("model", settings.openai_model)
                 await emit(
                     LlmRequestEvent(
-                        input=list(input_items),
+                        input=[dict(item) for item in input_items],
                         model=settings.openai_model,
                         iteration=iteration,
                     )
                 )
+                reasoning: Reasoning = {"effort": settings.openai_reasoning_effort}
                 stream = await client.responses.create(
                     model=settings.openai_model,
                     instructions=SYSTEM_PROMPT,
@@ -117,7 +122,7 @@ async def run_agent(
                     stream=True,
                     store=False,
                     max_output_tokens=settings.openai_max_output_tokens,
-                    reasoning={"effort": settings.openai_reasoning_effort},
+                    reasoning=reasoning,
                 )
 
                 final_response = None
@@ -131,12 +136,12 @@ async def run_agent(
                             await on_sentence(sentence)
                     elif event.type == "response.output_item.added":
                         item = event.item
-                        if getattr(item, "type", None) == "function_call":
+                        if isinstance(item, ResponseFunctionToolCall):
                             await emit(
                                 ToolCallEvent(
                                     call_id=item.call_id,
                                     name=item.name,
-                                    arguments=getattr(item, "arguments", "") or "",
+                                    arguments=item.arguments or "",
                                 )
                             )
                     elif event.type == "response.completed":
@@ -157,7 +162,7 @@ async def run_agent(
             function_calls = [
                 item
                 for item in final_response.output
-                if getattr(item, "type", None) == "function_call"
+                if isinstance(item, ResponseFunctionToolCall)
             ]
 
         if not function_calls:

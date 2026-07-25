@@ -13,11 +13,16 @@ whole turns and never orphans a ``function_call``/``function_call_output`` pair
 """
 
 
-def _is_user_message(item: dict) -> bool:
+from openai.types.responses import ResponseInputItemParam
+
+
+def _is_user_message(item: ResponseInputItemParam) -> bool:
     return item.get("type") == "message" and item.get("role") == "user"
 
 
-def truncate_history(items: list[dict], max_items: int) -> list[dict]:
+def truncate_history(
+    items: list[ResponseInputItemParam], max_items: int
+) -> list[ResponseInputItemParam]:
     """Return ``items`` trimmed to at most ~``max_items``, dropping only whole
     oldest turns. Returns the same list object when already under the cap.
 

@@ -17,6 +17,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from openai.types.responses import ToolParam
+
 if TYPE_CHECKING:
     from voice_assistant.session import Session
 
@@ -55,7 +57,7 @@ def tool(
     return decorator
 
 
-def definitions() -> list[dict]:
+def definitions() -> list[ToolParam]:
     """Return name-sorted OpenAI Responses tool definitions (strict mode)."""
     return [
         {

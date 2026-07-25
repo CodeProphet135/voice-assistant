@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from openai.types import ReasoningEffort
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Repo root .env is the single source of truth (see .env.example); resolved
@@ -14,7 +15,7 @@ class Settings(BaseSettings):
     # LLM
     openai_api_key: str = ""
     openai_model: str = "gpt-5-mini"
-    openai_reasoning_effort: str = "minimal"
+    openai_reasoning_effort: ReasoningEffort = "minimal"
     openai_max_output_tokens: int = 1024
 
     # Speech

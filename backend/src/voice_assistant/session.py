@@ -21,6 +21,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from fastapi import WebSocket
+from openai.types.responses import ResponseInputItemParam, ToolParam
 from opentelemetry import trace
 from starlette.websockets import WebSocketDisconnect
 from websockets.exceptions import ConnectionClosed
@@ -65,7 +66,7 @@ _tracer = get_tracer(__name__)
 # Tool schemas come from the registry; importing ``registry`` runs the tools
 # package __init__, which imports each tool module so it self-registers before
 # ``definitions()`` is read here.
-_TOOLS: list[dict] = registry.definitions()
+_TOOLS: list[ToolParam] = registry.definitions()
 
 # Sentinel pushed onto the TTS queue to signal the agent producer is done
 # (always enqueued last, even on error, so the drain loop always terminates).
@@ -161,7 +162,7 @@ class Session:
         self._session_uuid = uuid.uuid4()
         self.session_id = self._session_uuid.hex
         self.ws = ws
-        self.input_items: list[dict] = []
+        self.input_items: list[ResponseInputItemParam] = []
 
         # Pass the configured key explicitly; falling back to None keeps the
         # SDK's own OPENAI_API_KEY env lookup in play. The client is built
