@@ -75,6 +75,7 @@ class DeepgramSTT:
         self._reader_task: asyncio.Task[None] | None = None
         self._closing = False
         self._reconnect_delays = _RECONNECT_DELAYS
+        self._warned_schema_drift = False
 
     async def start(self) -> None:
         """Open the Deepgram streaming socket and start the background reader
@@ -151,23 +152,18 @@ class DeepgramSTT:
             except Exception:  # noqa: BLE001 - reopen failed; loop retries or exhausts
                 _logger.warning("Deepgram STT reconnect open failed", exc_info=True)
 
-    @staticmethod
-    def _normalize(msg: V1SocketClientResponse | bytes) -> SttEvent | None:
+    def _normalize(self, msg: V1SocketClientResponse | bytes) -> SttEvent | None:
         """Translate one raw Deepgram message into a normalized ``SttEvent``,
         or ``None`` for messages that carry no transcript signal.
 
-        The socket also yields raw ``bytes`` frames, and the SDK builds these
-        models *without validation* (``construct_type`` on an
-        ``UncheckedBaseModel``), so a field the schema declares as required
-        still arrives as ``None`` if Deepgram omits it — hence the defensive
-        reads below on statically non-optional fields.
+        The socket also yields raw ``bytes`` frames alongside parsed models.
         """
         if isinstance(msg, ListenV1Results):
-            channel = msg.channel
-            alternatives = channel.alternatives if channel else []
-            text = alternatives[0].transcript if alternatives else ""
+            # is_final/speech_final stay readable even on a malformed payload,
+            # so a broken message still carries its turn-end signal through to
+            # Session rather than stranding the buffered utterance.
             return Transcript(
-                text=text or "",
+                text=self._extract_transcript(msg),
                 is_final=bool(msg.is_final),
                 speech_final=bool(msg.speech_final),
             )
@@ -178,6 +174,50 @@ class DeepgramSTT:
         # "Metadata", raw audio frames, and anything unrecognized: ignore for
         # transcript purposes.
         return None
+
+    def _extract_transcript(self, msg: ListenV1Results) -> str:
+        """Read the top hypothesis out of a ``Results`` message, tolerating a
+        payload that doesn't match the schema the SDK declares.
+
+        The SDK parses socket messages with ``construct_type`` on an
+        ``UncheckedBaseModel`` — no validation — so a field typed as required
+        still arrives as ``None`` if Deepgram omits it. Statically these reads
+        look unnecessary; at runtime they are the difference between an empty
+        transcript and an ``AttributeError`` in ``Session._consume_stt``, which
+        does ``ev.text.strip()``.
+
+        Absent-but-schema-valid (an empty ``alternatives`` list) is normal and
+        silent. Schema-*violating* (a required field that came through as
+        ``None``) means the wire format has drifted from the SDK's model, which
+        would otherwise degrade to a permanently empty transcript with nothing
+        in the logs — so that case warns.
+        """
+        channel = msg.channel
+        alternatives = channel.alternatives if channel is not None else None
+        if alternatives is None:
+            self._warn_schema_drift("Results.channel.alternatives")
+            return ""
+        if not alternatives:
+            return ""
+        text = alternatives[0].transcript
+        if text is None:
+            self._warn_schema_drift("Results.channel.alternatives[0].transcript")
+            return ""
+        return text
+
+    def _warn_schema_drift(self, field: str) -> None:
+        """Warn once per provider instance. Interim results arrive several
+        times a second, so an unconditional log here would bury the signal it
+        exists to raise."""
+        if self._warned_schema_drift:
+            return
+        self._warned_schema_drift = True
+        _logger.warning(
+            "Deepgram STT payload is missing %s, which the SDK schema declares "
+            "as required — transcripts will be empty until this is resolved "
+            "(the wire format may have drifted from deepgram-sdk's models)",
+            field,
+        )
 
     async def send_audio(self, pcm: bytes) -> None:
         if self._socket is None:

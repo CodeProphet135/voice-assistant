@@ -8,11 +8,13 @@ transcript.
 """
 
 import asyncio
+import logging
 import os
 from typing import cast
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
+import pytest
 from conftest import FakeEventRecorder, FakeOpenAI, FakeTTSProvider, FakeWebSocket
 from deepgram.core.unchecked_base_model import construct_type
 from deepgram.listen.v1 import (
@@ -91,20 +93,34 @@ async def _drain(stt: DeepgramSTT, n: int) -> list:
 # --- Message normalization --------------------------------------------------
 
 
+def _from_wire(payload: dict) -> V1SocketClientResponse:
+    """Parse a raw payload through the SDK's own wire path — construct_type on
+    an UncheckedBaseModel — rather than hand-rolling a half-built model, so
+    these stay true to what the socket actually yields."""
+    return construct_type(
+        # construct_type declares type_ as Type[Any]; the discriminated union
+        # it is called with in socket_client.py isn't a class object.
+        type_=cast(type, V1SocketClientResponse),
+        object_=payload,
+    )
+
+
 def test_normalize_results_reads_first_alternative() -> None:
-    event = DeepgramSTT._normalize(_results_msg("hello there"))  # noqa: SLF001
+    event = DeepgramSTT()._normalize(_results_msg("hello there"))  # noqa: SLF001
     assert event == Transcript(text="hello there", is_final=True, speech_final=False)
 
 
 def test_normalize_maps_turn_signals() -> None:
+    stt = DeepgramSTT()
     speech_started = ListenV1SpeechStarted(channel=[0, 1], timestamp=1.5)
     utterance_end = ListenV1UtteranceEnd(channel=[0, 1], last_word_end=2.5)
 
-    assert DeepgramSTT._normalize(speech_started) == SpeechStarted()  # noqa: SLF001
-    assert DeepgramSTT._normalize(utterance_end) == UtteranceEnd()  # noqa: SLF001
+    assert stt._normalize(speech_started) == SpeechStarted()  # noqa: SLF001
+    assert stt._normalize(utterance_end) == UtteranceEnd()  # noqa: SLF001
 
 
 def test_normalize_ignores_metadata_and_binary_frames() -> None:
+    stt = DeepgramSTT()
     metadata = ListenV1Metadata(
         transaction_key="deprecated",
         request_id="00000000-0000-0000-0000-000000000000",
@@ -114,26 +130,66 @@ def test_normalize_ignores_metadata_and_binary_frames() -> None:
         channels=1,
     )
 
-    assert DeepgramSTT._normalize(metadata) is None  # noqa: SLF001
-    assert DeepgramSTT._normalize(b"\x00\x01") is None  # noqa: SLF001
+    assert stt._normalize(metadata) is None  # noqa: SLF001
+    assert stt._normalize(b"\x00\x01") is None  # noqa: SLF001
 
 
-def test_normalize_tolerates_fields_the_sdk_left_unvalidated() -> None:
-    # The SDK builds these models with construct_type (no validation), so a
-    # field the schema declares as required can still arrive as None. Parse
-    # through the SDK's own wire path rather than hand-rolling a half-built
-    # model, so this stays true to what the socket actually yields.
-    partial = construct_type(
-        # construct_type declares type_ as Type[Any]; the discriminated union
-        # it is called with in socket_client.py isn't a class object.
-        type_=cast(type, V1SocketClientResponse),
-        object_={"type": "Results", "channel": {"alternatives": []}},
-    )
+def test_normalize_empty_alternatives_is_silent() -> None:
+    # Schema-valid, just carries no hypothesis: empty transcript, no warning.
+    msg = _from_wire({"type": "Results", "channel": {"alternatives": []}})
 
-    assert isinstance(partial, ListenV1Results)
-    assert DeepgramSTT._normalize(partial) == Transcript(  # noqa: SLF001
+    stt = DeepgramSTT()
+    assert stt._normalize(msg) == Transcript(  # noqa: SLF001
         text="", is_final=False, speech_final=False
     )
+    assert stt._warned_schema_drift is False  # noqa: SLF001
+
+
+def test_normalize_survives_required_fields_arriving_as_none(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The SDK does not validate, so a field the schema declares as required
+    # can arrive as None. Session._consume_stt calls ev.text.strip(), so a
+    # None reaching Transcript.text would raise there rather than here.
+    for payload in (
+        {"type": "Results", "is_final": True},  # channel absent
+        {"type": "Results", "channel": {}},  # alternatives absent
+        {"type": "Results", "channel": {"alternatives": [{}]}},  # transcript absent
+        {"type": "Results", "channel": {"alternatives": [{"transcript": None}]}},
+    ):
+        caplog.clear()  # each payload must warn on its own
+        with caplog.at_level(logging.WARNING):
+            event = DeepgramSTT()._normalize(_from_wire(payload))  # noqa: SLF001
+
+        assert isinstance(event, Transcript), payload
+        assert event.text == "", payload
+        assert "declares as required" in caplog.text, payload
+
+
+def test_normalize_preserves_turn_end_signal_on_malformed_payload() -> None:
+    # A broken final message must still carry speech_final through, or the
+    # buffered utterance strands until UtteranceEnd fires.
+    msg = _from_wire({"type": "Results", "is_final": True, "speech_final": True})
+
+    assert DeepgramSTT()._normalize(msg) == Transcript(  # noqa: SLF001
+        text="", is_final=True, speech_final=True
+    )
+
+
+def test_schema_drift_warning_is_logged_once_per_provider(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Interim results arrive several times a second; warning on each would
+    # bury the signal.
+    stt = DeepgramSTT()
+    msg = _from_wire({"type": "Results", "channel": {"alternatives": [{}]}})
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            stt._normalize(msg)  # noqa: SLF001
+
+    warnings = [r for r in caplog.records if "declares as required" in r.getMessage()]
+    assert len(warnings) == 1
 
 
 # --- Reconnect --------------------------------------------------------------
