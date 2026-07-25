@@ -5,6 +5,8 @@
 // server→client TTS audio. The event *shapes* below are fixed for the whole
 // pipeline so the reducer in state.ts never has to change shape.
 
+import { validateServerEvent } from './eventValidation'
+
 /** Messages the client sends to the server. */
 export type ClientEvent =
   | { type: 'start'; sample_rate: number }
@@ -101,7 +103,12 @@ export class VoiceAssistantClient {
       } catch {
         return
       }
-      this.onEvent(parsed as ServerEvent)
+      // Validated, not just cast: a payload that doesn't match its own
+      // declared `type` (a version-skewed server, a malformed frame) is
+      // dropped with a warning instead of flowing into the reducer as if
+      // it were well-formed. See eventValidation.ts.
+      const validated = validateServerEvent(parsed)
+      if (validated !== null) this.onEvent(validated)
     })
   }
 

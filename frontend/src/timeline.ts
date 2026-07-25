@@ -86,10 +86,12 @@ export function computeTurns(events: RecordedEvent[]): Timeline {
     // timestamps (not clipped to the thinking window).
     const calls = new Map<string, number>()
     for (const e of group) {
-      if (e.type === 'tool_call') calls.set((e.payload as { call_id: string }).call_id, rel(e))
-      else if (e.type === 'tool_result') {
-        const cid = (e.payload as { call_id: string }).call_id
-        const cs = calls.get(cid)
+      // Narrow on the payload's own discriminator rather than casting --
+      // api.ts's fetchEvents already guarantees payload.type matches e.type,
+      // but this way the compiler proves call_id exists instead of assuming it.
+      if (e.payload.type === 'tool_call') calls.set(e.payload.call_id, rel(e))
+      else if (e.payload.type === 'tool_result') {
+        const cs = calls.get(e.payload.call_id)
         if (cs != null) segments.push({ kind: 'tool', start: cs, end: rel(e) })
       }
     }
