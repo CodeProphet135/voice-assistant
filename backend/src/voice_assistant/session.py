@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from fastapi import WebSocket
 from openai.types.responses import ResponseInputItemParam, ToolParam
 from opentelemetry import trace
+from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect
 from websockets.exceptions import ConnectionClosed
 
@@ -701,7 +702,17 @@ class Session:
                 _logger.warning("Error closing STT provider", exc_info=True)
 
     async def _dispatch(self, raw: str) -> None:
-        event = parse_client_event(json.loads(raw))
+        try:
+            event = parse_client_event(json.loads(raw))
+        except (json.JSONDecodeError, ValidationError) as exc:
+            # A malformed or version-skewed frame is a per-frame protocol
+            # violation, not a reason to tear down the connection -- without
+            # this, it propagates to run()'s last-resort handler, which ends
+            # the whole session (stops STT, closes TTS) over one bad frame.
+            # Mirrors the "never let a bad transcript kill the socket" guard
+            # in _consume_stt.
+            await self.emit(ErrorEvent(message=f"Malformed client frame ignored: {exc}"))
+            return
         if isinstance(event, TextInputEvent):
             await self._handle_text_input(event)
         elif isinstance(event, StartEvent):
