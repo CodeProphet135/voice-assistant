@@ -3,18 +3,29 @@
 Uses the installed ``deepgram-sdk`` 7.x generated client, which is a very
 different surface from the older v3-style SDK: ``client.listen.v1.connect()``
 is an *async context manager* yielding an ``AsyncV1SocketClient``, and
-received messages are pydantic models discriminated by a ``.type`` string
-(``"Results"``, ``"SpeechStarted"``, ``"UtteranceEnd"``, ``"Metadata"``)
-rather than callback-registered event classes. None of that vendor shape
-leaks past this file — ``Session`` only ever sees ``providers.base`` types.
+received messages are pydantic models discriminated by a ``.type`` literal
+(``V1SocketClientResponse``) rather than callback-registered event classes.
+Incoming messages are narrowed with ``isinstance`` against those concrete SDK
+models rather than a ``getattr(msg, "type")`` probe — every field this file
+reads then type-checks, so an SDK rename is a static error here instead of a
+silently-dropped transcript in production (same convention as the OpenAI
+boundary in ``agent/agent.py``). None of that vendor shape leaks past this
+file — ``Session`` only ever sees ``providers.base`` types.
 """
 
 import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
 
 from deepgram import AsyncDeepgramClient
+from deepgram.listen.v1 import (
+    ListenV1Results,
+    ListenV1SpeechStarted,
+    ListenV1UtteranceEnd,
+)
+from deepgram.listen.v1.socket_client import AsyncV1SocketClient, V1SocketClientResponse
 
 from voice_assistant.config import settings
 from voice_assistant.providers.base import (
@@ -58,10 +69,10 @@ class DeepgramSTT:
         self._api_key = api_key if api_key is not None else settings.deepgram_api_key
         self._model = model if model is not None else settings.deepgram_stt_model
         self._client: AsyncDeepgramClient | None = None
-        self._connect_cm = None
-        self._socket = None
+        self._connect_cm: AbstractAsyncContextManager[AsyncV1SocketClient] | None = None
+        self._socket: AsyncV1SocketClient | None = None
         self._queue: asyncio.Queue[SttEvent] = asyncio.Queue()
-        self._reader_task: asyncio.Task | None = None
+        self._reader_task: asyncio.Task[None] | None = None
         self._closing = False
         self._reconnect_delays = _RECONNECT_DELAYS
 
@@ -104,16 +115,23 @@ class DeepgramSTT:
         reconnect is exhausted it enqueues a terminal ``SttClosed``."""
         attempt = 0
         while not self._closing:
-            try:
-                async for msg in self._socket:
-                    attempt = 0  # any received message resets the budget
-                    event = self._normalize(msg)
-                    if event is not None:
-                        await self._queue.put(event)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - vendor socket errors must not crash the caller
-                _logger.warning("Deepgram STT socket reader errored", exc_info=True)
+            # Re-read each pass: a reconnect below rebinds ``self._socket``.
+            socket = self._socket
+            if socket is None:
+                # A reopen that failed leaves no socket; count it as a drop so
+                # the bounded-reconnect budget below still applies.
+                _logger.warning("Deepgram STT socket unavailable")
+            else:
+                try:
+                    async for msg in socket:
+                        attempt = 0  # any received message resets the budget
+                        event = self._normalize(msg)
+                        if event is not None:
+                            await self._queue.put(event)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - vendor socket errors must not crash the caller
+                    _logger.warning("Deepgram STT socket reader errored", exc_info=True)
 
             if self._closing:
                 break
@@ -134,21 +152,31 @@ class DeepgramSTT:
                 _logger.warning("Deepgram STT reconnect open failed", exc_info=True)
 
     @staticmethod
-    def _normalize(msg: object) -> SttEvent | None:
-        msg_type = getattr(msg, "type", None)
-        if msg_type == "Results":
-            alternatives = msg.channel.alternatives if msg.channel else []
+    def _normalize(msg: V1SocketClientResponse | bytes) -> SttEvent | None:
+        """Translate one raw Deepgram message into a normalized ``SttEvent``,
+        or ``None`` for messages that carry no transcript signal.
+
+        The socket also yields raw ``bytes`` frames, and the SDK builds these
+        models *without validation* (``construct_type`` on an
+        ``UncheckedBaseModel``), so a field the schema declares as required
+        still arrives as ``None`` if Deepgram omits it — hence the defensive
+        reads below on statically non-optional fields.
+        """
+        if isinstance(msg, ListenV1Results):
+            channel = msg.channel
+            alternatives = channel.alternatives if channel else []
             text = alternatives[0].transcript if alternatives else ""
             return Transcript(
-                text=text,
+                text=text or "",
                 is_final=bool(msg.is_final),
                 speech_final=bool(msg.speech_final),
             )
-        if msg_type == "SpeechStarted":
+        if isinstance(msg, ListenV1SpeechStarted):
             return SpeechStarted()
-        if msg_type == "UtteranceEnd":
+        if isinstance(msg, ListenV1UtteranceEnd):
             return UtteranceEnd()
-        # "Metadata" and anything unrecognized: ignore for transcript purposes.
+        # "Metadata", raw audio frames, and anything unrecognized: ignore for
+        # transcript purposes.
         return None
 
     async def send_audio(self, pcm: bytes) -> None:
@@ -168,7 +196,7 @@ class DeepgramSTT:
         with contextlib.suppress(Exception):  # noqa: BLE001 - best-effort close signal
             await self._socket.send_close_stream()
 
-    async def events(self):
+    async def events(self) -> AsyncIterator[SttEvent]:
         """Drain normalized events as they arrive. Stops naturally once the
         reader task finishes and the queue is empty for the caller's
         current iteration (callers own their own loop/cancellation)."""

@@ -1,20 +1,48 @@
 """Reconnect behavior for DeepgramSTT (Phase 5) + the session-level handling
-of a terminal SttClosed event. No real Deepgram SDK or key is involved — the
-socket + connect step are faked via monkeypatching the provider's open seam.
+of a terminal SttClosed event. No Deepgram key or network I/O is involved —
+the socket + connect step are faked via monkeypatching the provider's open
+seam. The *messages* those fake sockets yield are real SDK models, because
+``_normalize`` narrows on the concrete classes: a duck-typed stand-in would
+drift from the SDK and leave this suite green while production dropped every
+transcript.
 """
 
 import asyncio
 import os
+from typing import cast
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-from types import SimpleNamespace
-
 from conftest import FakeEventRecorder, FakeOpenAI, FakeTTSProvider, FakeWebSocket
+from deepgram.core.unchecked_base_model import construct_type
+from deepgram.listen.v1 import (
+    ListenV1Metadata,
+    ListenV1Results,
+    ListenV1ResultsChannel,
+    ListenV1ResultsChannelAlternativesItem,
+    ListenV1ResultsMetadata,
+    ListenV1ResultsMetadataModelInfo,
+    ListenV1SpeechStarted,
+    ListenV1UtteranceEnd,
+)
+from deepgram.listen.v1.socket_client import V1SocketClientResponse
 
-from voice_assistant.providers.base import SttClosed, Transcript
+from voice_assistant.providers.base import (
+    SpeechStarted,
+    SttClosed,
+    Transcript,
+    UtteranceEnd,
+)
 from voice_assistant.providers.deepgram import DeepgramSTT
 from voice_assistant.session import Session
+
+# Required by the SDK model but irrelevant to normalization — kept in one
+# place so the meaningful fields stay legible in _results_msg().
+_METADATA = ListenV1ResultsMetadata(
+    request_id="00000000-0000-0000-0000-000000000000",
+    model_uuid="00000000-0000-0000-0000-000000000000",
+    model_info=ListenV1ResultsMetadataModelInfo(name="nova-3", version="1", arch="test"),
+)
 
 
 class _FakeSocket:
@@ -32,11 +60,23 @@ class _FakeSocket:
             yield _results_msg(t)
 
 
-def _results_msg(text: str):
-    alt = SimpleNamespace(transcript=text)
-    channel = SimpleNamespace(alternatives=[alt])
-    return SimpleNamespace(
-        type="Results", channel=channel, is_final=True, speech_final=False
+def _results_msg(text: str) -> ListenV1Results:
+    """A real ``ListenV1Results`` — validated construction, so this fake can't
+    drift from the schema ``_normalize`` reads."""
+    return ListenV1Results(
+        channel_index=[0, 1],
+        duration=1.0,
+        start=0.0,
+        is_final=True,
+        speech_final=False,
+        channel=ListenV1ResultsChannel(
+            alternatives=[
+                ListenV1ResultsChannelAlternativesItem(
+                    transcript=text, confidence=0.99, words=[]
+                )
+            ]
+        ),
+        metadata=_METADATA,
     )
 
 
@@ -46,6 +86,57 @@ async def _drain(stt: DeepgramSTT, n: int) -> list:
     for _ in range(n):
         out.append(await asyncio.wait_for(gen.__anext__(), timeout=1.0))
     return out
+
+
+# --- Message normalization --------------------------------------------------
+
+
+def test_normalize_results_reads_first_alternative() -> None:
+    event = DeepgramSTT._normalize(_results_msg("hello there"))  # noqa: SLF001
+    assert event == Transcript(text="hello there", is_final=True, speech_final=False)
+
+
+def test_normalize_maps_turn_signals() -> None:
+    speech_started = ListenV1SpeechStarted(channel=[0, 1], timestamp=1.5)
+    utterance_end = ListenV1UtteranceEnd(channel=[0, 1], last_word_end=2.5)
+
+    assert DeepgramSTT._normalize(speech_started) == SpeechStarted()  # noqa: SLF001
+    assert DeepgramSTT._normalize(utterance_end) == UtteranceEnd()  # noqa: SLF001
+
+
+def test_normalize_ignores_metadata_and_binary_frames() -> None:
+    metadata = ListenV1Metadata(
+        transaction_key="deprecated",
+        request_id="00000000-0000-0000-0000-000000000000",
+        sha256="",
+        created="2026-07-25T00:00:00.000Z",
+        duration=1.0,
+        channels=1,
+    )
+
+    assert DeepgramSTT._normalize(metadata) is None  # noqa: SLF001
+    assert DeepgramSTT._normalize(b"\x00\x01") is None  # noqa: SLF001
+
+
+def test_normalize_tolerates_fields_the_sdk_left_unvalidated() -> None:
+    # The SDK builds these models with construct_type (no validation), so a
+    # field the schema declares as required can still arrive as None. Parse
+    # through the SDK's own wire path rather than hand-rolling a half-built
+    # model, so this stays true to what the socket actually yields.
+    partial = construct_type(
+        # construct_type declares type_ as Type[Any]; the discriminated union
+        # it is called with in socket_client.py isn't a class object.
+        type_=cast(type, V1SocketClientResponse),
+        object_={"type": "Results", "channel": {"alternatives": []}},
+    )
+
+    assert isinstance(partial, ListenV1Results)
+    assert DeepgramSTT._normalize(partial) == Transcript(  # noqa: SLF001
+        text="", is_final=False, speech_final=False
+    )
+
+
+# --- Reconnect --------------------------------------------------------------
 
 
 async def test_reconnects_on_unexpected_socket_end() -> None:
@@ -88,7 +179,9 @@ async def test_emits_sttclosed_when_reconnect_exhausted() -> None:
         raise RuntimeError("connection refused")
 
     async def fake_close() -> None:
-        pass
+        # Mirror the real _close_socket: a failed reopen therefore leaves the
+        # reader with no socket at all, which must still count as a drop.
+        stt._socket = None  # noqa: SLF001
 
     stt._open_socket = fake_open  # noqa: SLF001
     stt._close_socket = fake_close  # noqa: SLF001
